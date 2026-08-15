@@ -45,23 +45,40 @@ def time_based_split(
     return train_df, test_df
 
 
-def get_X_y(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    """Select model-input columns and target from a transactions DataFrame."""
-    X = df[config.FEATURE_COLUMNS].copy()
+def get_X_y(
+    df: pd.DataFrame, feature_columns: list[str] = config.FEATURE_COLUMNS
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Select model-input columns and target from a transactions DataFrame.
+
+    Defaults to Phase 1's transaction-only feature set; pass
+    `config.FEATURE_COLUMNS_WITH_CYBER` to include Phase 2's cyber
+    features instead.
+    """
+    X = df[feature_columns].copy()
     y = df[config.TARGET_COL].astype(int).copy()
     return X, y
 
 
-def build_preprocessor() -> ColumnTransformer:
-    """Numeric -> scale, categorical -> one-hot, binary flags -> passthrough."""
+def build_preprocessor(
+    numeric_features: list[str] = config.NUMERIC_FEATURES,
+    categorical_features: list[str] = config.CATEGORICAL_FEATURES,
+    binary_features: list[str] = config.BINARY_FEATURES,
+) -> ColumnTransformer:
+    """Numeric -> scale, categorical -> one-hot, binary flags -> passthrough.
+
+    Defaults to Phase 1's transaction-only feature groups; pass
+    `config.NUMERIC_FEATURES + config.CYBER_NUMERIC_FEATURES` (and the
+    binary equivalent) to build a preprocessor for the transaction+cyber
+    feature set instead.
+    """
     return ColumnTransformer(
         transformers=[
-            ("numeric", StandardScaler(), config.NUMERIC_FEATURES),
+            ("numeric", StandardScaler(), numeric_features),
             (
                 "categorical",
                 OneHotEncoder(handle_unknown="ignore"),
-                config.CATEGORICAL_FEATURES,
+                categorical_features,
             ),
-            ("binary", "passthrough", config.BINARY_FEATURES),
+            ("binary", "passthrough", binary_features),
         ]
     )

@@ -8,6 +8,7 @@ without the caller needing to know how features were engineered.
 from __future__ import annotations
 
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
@@ -41,13 +42,18 @@ def build_baseline_pipeline() -> Pipeline:
     )
 
 
-def build_xgboost_pipeline(scale_pos_weight: float) -> Pipeline:
+def build_xgboost_pipeline(scale_pos_weight: float, preprocessor: ColumnTransformer | None = None) -> Pipeline:
     """Gradient-boosted trees: captures non-linear interactions between
     risk factors (e.g. new_device AND night-time AND high_risk_category)
-    that a linear model can only approximate."""
+    that a linear model can only approximate.
+
+    Defaults to the Phase 1 transaction-only preprocessor; pass a
+    preprocessor built over `config.FEATURE_COLUMNS_WITH_CYBER` to train
+    the Phase 2 transaction+cyber variant instead.
+    """
     return Pipeline(
         steps=[
-            ("preprocessor", build_preprocessor()),
+            ("preprocessor", preprocessor if preprocessor is not None else build_preprocessor()),
             (
                 "classifier",
                 XGBClassifier(
