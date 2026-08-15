@@ -508,6 +508,7 @@ call + any pending approval + token/cost/latency accounting) is an
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | Liveness check — `{"status": "ok"}` |
+| `GET /demo/sample-transactions` | 5 (or `?n=`) valid transaction_ids with risk score/tier — see [below](#trying-the-demo) |
 | `GET /transactions/{id}`, `/transactions/{id}/risk` | Phase 1–3 passthrough |
 | `GET /customers/{id}/auth-history`, `/graph-neighbors` | Phase 2/3 passthrough |
 | `POST /policy/search` | RAG search over the policy corpus |
@@ -515,6 +516,32 @@ call + any pending approval + token/cost/latency accounting) is an
 | `GET /investigations/{id}` | Retrieve a prior run |
 | `GET /approvals`, `POST /approvals/{id}/decision` | The human-approval queue |
 | `GET /cases`, `GET /cases/{id}` | Cases created only after approval |
+
+### Trying the demo
+
+The synthetic dataset's transaction_ids aren't documented anywhere a caller
+would otherwise see them, so `GET /demo/sample-transactions` hands out a
+few valid, real ones to get started against a freshly deployed instance —
+by default a demo-friendly mix spread across risk tiers (up to 2 tier_1, 2
+tier_2, 1 tier_3), not just whatever sorts first:
+
+```
+curl http://localhost:8000/demo/sample-transactions
+# {"transactions": [
+#   {"transaction_id": "...", "risk_score": 0.986, "risk_tier": "tier_1"},
+#   {"transaction_id": "...", "risk_score": 0.005, "risk_tier": "tier_3"},
+#   ...
+# ]}
+
+curl http://localhost:8000/investigations \
+  -X POST -H 'content-type: application/json' \
+  -d '{"transaction_id": "<one of the ids above>"}'
+```
+
+The underlying scan (`investigation.data_access.sample_transactions`) is
+cached after its first call — tier_1 alerts are rare in this dataset (see
+POL-AML-001 §2.1), so finding a couple can mean scoring a few hundred
+candidates; the endpoint pays that cost once per process, not per request.
 
 ### Analyst-facing explanations, grounded and cited
 

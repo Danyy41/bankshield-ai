@@ -125,6 +125,15 @@ def post_policy_search(request: PolicySearchRequest) -> dict:
     return {"results": search_policy(request.query, top_k=request.top_k)}
 
 
+@app.get("/demo/sample-transactions")
+def get_sample_transactions(n: int = 5) -> dict:
+    """Valid, deployed transaction_ids with their risk score/tier, so a
+    caller with no prior knowledge of this dataset can immediately try
+    `/transactions/{id}`, `/investigations`, etc. against something real --
+    useful for the public demo deployment (see BANKSHIELD_LLM_MODE above)."""
+    return {"transactions": list(data_access.sample_transactions(n=n))}
+
+
 # --- Phase 4 investigation workflow -----------------------------------------
 
 

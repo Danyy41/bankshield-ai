@@ -226,3 +226,51 @@ def get_risk_score(transaction_id: str, top_n: int = 5) -> dict:
         "risk_tier": _risk_tier(proba),
         "top_contributing_features": top_features,
     }
+
+
+@lru_cache(maxsize=16)
+def sample_transactions(n: int = 5, candidate_pool: int = 600) -> list[dict]:
+    """Deterministically pick up to `n` deployed transaction_ids with a
+    valid risk score, spread across risk tiers where possible -- backs
+    `GET /demo/sample-transactions`, so a caller with no prior knowledge of
+    this dataset's transaction_ids can immediately try the rest of the API
+    (`/transactions/{id}`, `/investigations`, ...) against something real.
+
+    Not the evaluation golden set (see investigation.evaluation.
+    select_golden_set for that) -- this just needs *some* valid, varied
+    IDs quickly, not a rigorous per-tier sample size. Scans a bounded,
+    deterministic candidate pool (every Nth transaction_id in sorted
+    order), same shape select_golden_set uses to stay fast without scoring
+    the whole dataset. Even so, tier_1 alerts are rare (~1.4% base fraud
+    rate, rarer still above the 0.80 threshold -- see POL-AML-001 §2.1), so
+    reaching a couple of them can scan hundreds of candidates; cached
+    (`lru_cache`) since the answer is deterministic per (n, candidate_pool)
+    for the life of the process and this backs a demo endpoint likely hit
+    repeatedly -- computing it fresh on every request would be a
+    multi-second response for no benefit.
+    """
+    store = get_store()
+    sorted_ids = sorted(store.transactions["transaction_id"].tolist())
+    step = max(1, len(sorted_ids) // candidate_pool)
+    candidates = sorted_ids[::step][:candidate_pool]
+
+    tier_order = ["tier_1", "tier_2", "tier_3"]
+    by_tier: dict[str, list[dict]] = {t: [] for t in tier_order}
+    per_tier_cap = -(-n // len(tier_order))  # ceil(n / 3), for tier variety
+
+    for txn_id in candidates:
+        risk = get_risk_score(txn_id)
+        tier = risk["risk_tier"]
+        if len(by_tier[tier]) < per_tier_cap:
+            by_tier[tier].append(
+                {
+                    "transaction_id": risk["transaction_id"],
+                    "risk_score": risk["risk_score"],
+                    "risk_tier": risk["risk_tier"],
+                }
+            )
+        if sum(len(v) for v in by_tier.values()) >= n:
+            break
+
+    samples = [row for tier in tier_order for row in by_tier[tier]]
+    return samples[:n]

@@ -108,3 +108,37 @@ def test_get_risk_score_high_risk_transaction_cites_plausible_drivers(store):
     result = data_access.get_risk_score(txn_id)
     top_feature_names = {f["feature"] for f in result["top_contributing_features"]}
     assert any(name.startswith("cyber_") or name.startswith("graph_") for name in top_feature_names)
+
+
+# --- sample_transactions (backs GET /demo/sample-transactions) -------------
+
+
+def test_sample_transactions_returns_requested_count():
+    samples = data_access.sample_transactions(n=5)
+    assert len(samples) == 5
+
+
+def test_sample_transactions_ids_are_all_valid():
+    for row in data_access.sample_transactions(n=5):
+        data_access.get_transaction(row["transaction_id"])  # raises NotFoundError if invalid
+
+
+def test_sample_transactions_scores_match_get_risk_score():
+    for row in data_access.sample_transactions(n=5):
+        risk = data_access.get_risk_score(row["transaction_id"])
+        assert row["risk_score"] == risk["risk_score"]
+        assert row["risk_tier"] == risk["risk_tier"]
+
+
+def test_sample_transactions_shape_is_demo_friendly():
+    for row in data_access.sample_transactions(n=5):
+        assert set(row.keys()) == {"transaction_id", "risk_score", "risk_tier"}
+
+
+def test_sample_transactions_is_deterministic():
+    assert data_access.sample_transactions(n=5) == data_access.sample_transactions(n=5)
+
+
+def test_sample_transactions_respects_smaller_n():
+    samples = data_access.sample_transactions(n=2)
+    assert len(samples) == 2

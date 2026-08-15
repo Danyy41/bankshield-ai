@@ -71,6 +71,24 @@ def test_get_graph_neighbors(client, tier1_transaction_id):
     assert "neighbors" in response.json()
 
 
+def test_sample_transactions(client):
+    response = client.get("/demo/sample-transactions")
+    assert response.status_code == 200
+    transactions = response.json()["transactions"]
+    assert len(transactions) == 5
+    for row in transactions:
+        assert set(row.keys()) == {"transaction_id", "risk_score", "risk_tier"}
+        # Every sampled ID must actually resolve through the rest of the API.
+        detail = client.get(f"/transactions/{row['transaction_id']}")
+        assert detail.status_code == 200
+
+
+def test_sample_transactions_respects_n_query_param(client):
+    response = client.get("/demo/sample-transactions", params={"n": 2})
+    assert response.status_code == 200
+    assert len(response.json()["transactions"]) == 2
+
+
 def test_policy_search(client):
     response = client.post("/policy/search", json={"query": "account takeover", "top_k": 2})
     assert response.status_code == 200
