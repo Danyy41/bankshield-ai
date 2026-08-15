@@ -4,7 +4,7 @@ BankShield AI is a portfolio project demonstrating production-style AI engineeri
 across financial crime detection, cybersecurity, and applied ML. It is being built
 in phases, each one a complete, working slice rather than a stub.
 
-**This repository currently implements Phase 1 and Phase 2.**
+**This repository currently implements Phase 1, Phase 2, and Phase 3.**
 
 ## Phase 1: fraud-detection ML baseline
 
@@ -13,12 +13,13 @@ engineering, a leakage-safe train/test split, two classifiers (Logistic
 Regression and XGBoost), and evaluation metrics chosen for a rare-event
 classification problem rather than misleading accuracy.
 
-No AWS, no LLMs, no RAG, no agents, no frontend, no cyber-telemetry yet —
-those are later phases, and this project is deliberately structured so they
-can be added without reworking Phase 1 (see [Roadmap](#roadmap)). Phase 1's
-data, models, and metrics are untouched by Phase 2 below — this is verified
-by a regression test and by re-running the full pipeline and diffing the
-outputs (see [Phase 2](#phase-2-cyber-authentication-telemetry)).
+No AWS, no LLMs, no RAG, no agents, no frontend yet — those are later
+phases, and this project is deliberately structured so they can be added
+without reworking Phase 1 (see [Roadmap](#roadmap)). Phase 1's data,
+models, and metrics are untouched by Phases 2 and 3 below — this is
+verified by regression tests and by re-running the full pipeline and
+diffing the outputs (model file hashes and metrics JSON come out
+byte-identical) after every later-phase change.
 
 ### What's in the data
 
@@ -69,7 +70,7 @@ leakage could otherwise be introduced.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-python scripts/run_all.py          # runs the full Phase 1 + Phase 2 pipeline (steps 1-9)
+python scripts/run_all.py          # runs the full Phase 1 + 2 + 3 pipeline (steps 1-12)
 ```
 
 Or step by step (Phase 1; see [Phase 2](#phase-2-cyber-authentication-telemetry) for steps 7-9):
@@ -171,16 +172,18 @@ category, risk-factor lift, correlation matrix) to `reports/figures/`.
 ```
 bankshield-ai/
 ├── src/bankshield/          # importable package — the actual logic
-│   ├── config.py            # paths, column lists, run parameters (Phase 1 + 2)
+│   ├── config.py            # paths, column lists, run parameters (Phase 1 + 2 + 3)
 │   ├── data_generation.py   # synthetic transaction generator (Phase 1)
 │   ├── features.py          # train/test split + preprocessing pipeline
 │   ├── modeling.py          # model definitions (LogReg, XGBoost)
 │   ├── evaluation.py        # metrics, confusion matrix, PR/ROC plots
 │   ├── eda.py                # exploratory analysis plots
 │   ├── auth_generation.py   # synthetic login/session event generator (Phase 2)
-│   └── cyber_features.py    # causal login-history -> transaction feature merge (Phase 2)
-├── scripts/                 # thin, numbered, run-in-order entry points (01-06 Phase 1, 07-09 Phase 2)
-├── tests/                   # data-generation, split, and cyber-feature sanity checks
+│   ├── cyber_features.py    # causal login-history -> transaction feature merge (Phase 2)
+│   ├── graph_generation.py  # beneficiary reconstruction + mule-ring injection (Phase 3)
+│   └── graph_features.py    # causal graph-relationship -> transaction feature merge (Phase 3)
+├── scripts/                 # thin, numbered, run-in-order entry points (01-06 Phase 1, 07-09 Phase 2, 10-12 Phase 3)
+├── tests/                   # data-generation, split, cyber-, and graph-feature sanity checks
 ├── data/{raw,processed}/    # generated CSVs (gitignored, regenerate via scripts)
 ├── models/                  # saved joblib pipelines (gitignored, regenerate via scripts)
 └── reports/
@@ -301,13 +304,124 @@ that Phase 1's `get_X_y`/`build_preprocessor` still behave identically
 when called with no arguments (both gained optional parameters for
 Phase 2 but default to the original Phase 1 behavior).
 
+## Phase 3: graph-based financial crime intelligence
+
+Adds relationships *between* customers — shared devices, IPs, and money-
+transfer beneficiaries — and asks a further question: **once a model
+already has transaction and cyber-telemetry features, does knowing who's
+connected to whom add anything more?**
+
+### Design: simulating mule rings, without touching Phase 1/2
+
+Phase 1 never persisted an actual beneficiary ID (only a `new_beneficiary`
+boolean), and independently-randomized device IDs/IPs essentially never
+collide by chance — so there's no organic account-to-account structure to
+mine. Phase 3 builds it, in a new module (`graph_generation.py`) that only
+ever reads Phase 1/2's existing, fixed data:
+
+1. **Reconstructs beneficiary IDs** consistent with the existing
+   `new_beneficiary` flag — a customer's first "new beneficiary"
+   transaction gets a fresh ID, later non-new ones reuse one of their own
+   prior IDs. These are new synthetic labels generated here, not values
+   recovered from Phase 1's internal state (Phase 1 never stored them).
+2. **Injects mule rings**: ~25 rings of 3-7 customers, membership skewed
+   toward (never limited to) customers who already have a fraudulent
+   transaction, each ring sharing a small pool of devices/IPs/beneficiary
+   IDs across a fraction of members' transactions (biased toward their
+   fraudulent ones, never all of them). Ring members end up with roughly
+   an 11% fraud rate versus ~1.3% for everyone else — real, useful
+   structure, not a deterministic tell.
+
+Everything lands in new columns (`graph_device_id`, `graph_ip_address`,
+`beneficiary_id`) that default to a transaction's own real device/IP — the
+`device_id`/`ip_address`/`new_device` columns Phase 1/2 rely on are
+untouched.
+
+### Causal graph construction — the leakage-critical part
+
+Phase 1/2's causal features are computed per customer in isolation
+(walking one customer's own history forward in time). A graph is
+different: it connects customers *to each other*, so `graph_features.py`
+instead makes a **single chronological pass over all transactions**,
+maintaining incremental state (who has used which device/IP/beneficiary
+so far, and which customers are known to have committed fraud so far).
+For every transaction, in timestamp order: compute its features from that
+state, *then* fold the transaction's own device/IP/beneficiary usage and
+fraud outcome into the state for the future. A transaction never sees its
+own contribution or anything that happens later.
+
+This surfaced a real bug during development: the edge-forming step
+initially didn't exclude a customer's own prior usage from their "shared
+with" set, so a customer reusing their own device created a false
+self-loop that inflated their own neighbor count. An exact-value unit
+test (`test_graph_features_no_future_leakage`) caught it before it shipped
+— now checked into the test suite as a permanent regression guard.
+A second, unrelated determinism bug was also caught this way: ring
+membership was iterated from a Python `set`, whose order is randomized
+per-process by design (`PYTHONHASHSEED`), which silently reshuffled which
+random draws went to which ring member on every run. Fixed by iterating a
+sorted, order-stable sequence instead — verified by regenerating twice and
+diffing the output.
+
+Features (all causal, all prefixed `graph_`): `shared_device_count`,
+`shared_ip_count`, `beneficiary_connectivity` (other customers who share
+this device/IP/beneficiary, before now), `suspicious_neighbor_count`
+(known neighbors with prior fraud), and `account_network_risk` (fraud
+rate among those neighbors).
+
+### Pipeline (continues from Phase 1/2)
+
+| Step | Script | What it does |
+|---|---|---|
+| 10 | `scripts/10_generate_graph_relationships.py` | Reconstruct beneficiary IDs, inject mule rings → `data/raw/graph_entities.csv` |
+| 11 | `scripts/11_add_graph_features.py` | Merge graph features onto the cyber-enriched transactions, re-split → `train_with_graph.csv` / `test_with_graph.csv` |
+| 12 | `scripts/12_train_compare_graph.py` | Train transaction+cyber vs. transaction+cyber+graph XGBoost, compare → `reports/phase3_comparison.md` |
+
+Step 11 re-splits with the same `time_based_split` used throughout, so row
+membership matches Phase 1/2's splits exactly (verified in-script, same as
+Phase 2).
+
+### Results: does graph intelligence help further?
+
+Test set: 10,000 transactions, 1.38% fraud prevalence. Both models use
+identical rows, hyperparameters, and `scale_pos_weight`.
+
+| Model | Precision | Recall | F1 | ROC-AUC | PR-AUC |
+|---|---|---|---|---|---|
+| Transaction + cyber | 0.432 | 0.645 | 0.517 | 0.925 | 0.551 |
+| Transaction + cyber + graph | 0.428 | 0.623 | 0.507 | **0.937** | **0.572** |
+
+**Yes, further — modestly, and with an honest caveat.** Both
+threshold-independent metrics improve (ROC-AUC +0.013, PR-AUC +0.021),
+meaning the model got better at ranking fraud above legitimate
+transactions. But at the fixed default 0.5 threshold, precision/recall/F1
+actually dip slightly — adding features shifts the model's predicted-
+probability distribution, so the cutoff tuned for transaction+cyber isn't
+automatically optimal for transaction+cyber+graph. That's a threshold-
+calibration artifact, not evidence against the features: a deployment
+would re-tune the decision threshold before shipping either model, not
+compare them at a cutoff neither was chosen for. In the trained model's
+feature importances, `graph_suspicious_neighbor_count` and
+`graph_shared_device_count` both place in the top 12 — real, if smaller
+than cyber telemetry's, since most of the detection gain over
+transaction-only was already captured in Phase 2. Full write-up:
+[`reports/phase3_comparison.md`](reports/phase3_comparison.md).
+
+### Tests
+
+`tests/test_graph_generation.py` adds: graph-entity schema/uniqueness,
+ring membership correlating with fraud without being deterministic,
+exact-value beneficiary-ID reconstruction consistency, the exact-value
+causal leakage test described above (including the specific case that
+caught the self-loop bug — a customer reusing their own device before
+anyone else touches it), graph feature correlation with fraud on
+generated data, and row/column preservation checks.
+
 ## Roadmap
 
-Phase 1 and 2 (this repo) are the classical ML + cyber-telemetry
-foundation. Planned next:
+Phase 1, 2, and 3 (this repo) are the classical ML + cyber-telemetry +
+graph-intelligence foundation. Planned next:
 
-- **Phase 3** — graph-based fraud detection (shared devices/beneficiaries
-  across customers, ring detection).
 - **Phase 4** — AWS deployment (SageMaker/Lambda serving), Bedrock, RAG over
   fraud policy/case documents, and agentic investigation workflows.
 - **Phase 5** — AI-security testing of the resulting system (prompt
