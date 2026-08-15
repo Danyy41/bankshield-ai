@@ -124,10 +124,9 @@ XGBoost's more moderate `scale_pos_weight` trades some recall for far fewer
 false positives. Neither is "more correct" in the abstract — the right
 operating point is a business decision (cost of a missed fraud vs. cost of
 a false alarm), which is why this project reports the full metric suite
-and the PR/ROC curves (`reports/figures/roc_pr_comparison.png`) instead of
-picking one number and one threshold.
-
-![ROC and PR curves](reports/figures/roc_pr_comparison.png)
+and the PR/ROC curves (`reports/figures/roc_pr_comparison.png`, generated
+by `scripts/06_compare_models.py`) instead of picking one number and one
+threshold.
 
 ### Why accuracy alone is misleading
 
@@ -157,12 +156,12 @@ Full write-up with worked numbers: [`reports/model_comparison.md`](reports/model
 
 ### Exploratory analysis
 
-See [`reports/eda_summary.md`](reports/eda_summary.md) and `reports/figures/`
-for class balance, amount distributions, fraud rate by hour/category, and
-risk-factor lift (e.g. transactions with a new beneficiary are ~6-7x more
-likely to be fraud than the baseline rate).
-
-![Fraud rate lift by risk factor](reports/figures/risk_factor_lift.png)
+See [`reports/eda_summary.md`](reports/eda_summary.md) for class balance,
+fraud rate by hour/category, and risk-factor lift numbers (e.g.
+transactions with a new beneficiary are roughly 7-11x more likely to be
+fraud than the baseline rate). Running `scripts/02_run_eda.py` additionally
+saves plots (class balance, amount distributions, fraud rate by hour and
+category, risk-factor lift, correlation matrix) to `reports/figures/`.
 
 ### Project structure
 
@@ -179,7 +178,10 @@ bankshield-ai/
 ├── tests/                   # data-generation and split sanity checks
 ├── data/{raw,processed}/    # generated CSVs (gitignored, regenerate via scripts)
 ├── models/                  # saved joblib pipelines (gitignored, regenerate via scripts)
-└── reports/{figures,metrics}/  # EDA + evaluation outputs (versioned)
+└── reports/
+    ├── metrics/              # evaluation JSON (versioned)
+    ├── figures/              # EDA + evaluation plots (gitignored, regenerate via scripts)
+    └── *.md                  # EDA and model-comparison write-ups (versioned)
 ```
 
 Preprocessing (`StandardScaler` + `OneHotEncoder`) lives inside the same
