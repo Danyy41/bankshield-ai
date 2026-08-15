@@ -18,6 +18,11 @@ Phase 3 (graph-based financial crime intelligence):
 11. Merge graph features onto transactions, re-split
 12. Train + compare transaction+cyber vs. transaction+cyber+graph XGBoost
 
+Phase 4 (AI-assisted investigation, offline evaluation only):
+13. Evaluate the investigation agent (citation correctness, evidence
+    faithfulness, tool-call success, latency, cost) against a golden set,
+    using the offline fake LLM client -- no AWS credentials required.
+
 Usage:
     python scripts/run_all.py
 """
@@ -40,6 +45,7 @@ STEPS = [
     "10_generate_graph_relationships.py",
     "11_add_graph_features.py",
     "12_train_compare_graph.py",
+    "13_evaluate_investigations.py",
 ]
 
 

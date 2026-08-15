@@ -6,3 +6,9 @@ matplotlib>=3.7
 seaborn>=0.12
 joblib>=1.3
 Faker>=20.0
+
+# Phase 4: AI-assisted investigation system
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+boto3>=1.34

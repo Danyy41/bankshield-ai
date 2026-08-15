@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=7.4
+httpx2>=2.0  # required by starlette.testclient (FastAPI TestClient) for Phase 4 API tests

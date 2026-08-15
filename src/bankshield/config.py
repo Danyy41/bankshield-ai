@@ -192,3 +192,44 @@ GRAPH_FEATURE_COLUMNS = GRAPH_NUMERIC_FEATURES
 
 # Transaction + cyber (Phase 1+2, unchanged) + graph telemetry.
 FEATURE_COLUMNS_WITH_GRAPH = FEATURE_COLUMNS_WITH_CYBER + GRAPH_FEATURE_COLUMNS
+
+
+# =========================================================================
+# Phase 4: AI-assisted investigation system
+# =========================================================================
+# Everything below is additive -- it reads Phase 1/2/3's already-fixed data
+# and trained models and never modifies them or the constants above.
+
+POLICY_DOCS_DIR = ROOT_DIR / "data" / "policy_docs"
+
+# Data backing the investigation service layer: the richest available
+# per-transaction dataset (transaction + cyber + graph features), the best
+# available trained model, plus the raw login/graph tables for tool-level
+# drill-down (get_auth_history, get_graph_neighbors).
+INVESTIGATION_MODEL_PATH = XGBOOST_WITH_GRAPH_MODEL_PATH
+INVESTIGATION_FEATURE_COLUMNS = FEATURE_COLUMNS_WITH_GRAPH
+
+# Bedrock / Claude configuration. Model ID uses the Bedrock `anthropic.`
+# prefix (see AWS Bedrock docs) -- overridable via env var so this can be
+# pointed at a different Bedrock-enabled model/region without a code change.
+BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-opus-5"
+BEDROCK_REGION_DEFAULT = "us-east-1"
+
+# Rough list-price token costs (USD per 1,000 tokens) used only for the
+# offline cost estimator in the evaluation harness -- not billing-accurate,
+# a planning estimate. Keyed by substring match against the model id.
+BEDROCK_PRICE_PER_1K_TOKENS = {
+    "claude-opus-5": {"input": 0.005, "output": 0.025},
+    "claude-sonnet-5": {"input": 0.003, "output": 0.015},
+    "claude-haiku-4-5": {"input": 0.001, "output": 0.005},
+}
+
+# RAG: chunk size for policy documents, measured in characters, and how many
+# chunks search_policy returns by default.
+POLICY_CHUNK_SIZE_CHARS = 900
+POLICY_CHUNK_OVERLAP_CHARS = 150
+POLICY_SEARCH_TOP_K = 4
+
+# Alert tiers mirror POL-AML-001 SS2.1.
+RISK_TIER_1_THRESHOLD = 0.80
+RISK_TIER_2_THRESHOLD = 0.50
