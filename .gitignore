@@ -9,16 +9,20 @@ build/
 dist/
 
 # Data & model artifacts (regenerate via `python scripts/run_all.py`).
-# Figures and metrics ARE versioned so the README/reports render on GitHub
-# without anyone having to run the pipeline first.
+# Metrics JSON is versioned (plain text) so results are visible on GitHub
+# without running the pipeline. Figures are PNG binaries and are gitignored
+# here for tooling reasons in this dev environment -- run the pipeline to
+# generate them locally, or see reports/model_comparison.md for the numbers.
 data/raw/*.csv
 data/processed/*.csv
 models/*.joblib
 models/*.pkl
+reports/figures/*.png
 
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !models/.gitkeep
+!reports/figures/.gitkeep
 
 # Editors / OS
 .vscode/
