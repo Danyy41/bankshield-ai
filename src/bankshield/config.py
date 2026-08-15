@@ -233,3 +233,14 @@ POLICY_SEARCH_TOP_K = 4
 # Alert tiers mirror POL-AML-001 SS2.1.
 RISK_TIER_1_THRESHOLD = 0.80
 RISK_TIER_2_THRESHOLD = 0.50
+
+# Deployment mode for the FastAPI service layer (api/app.py): which
+# LLMClient implementation backs investigations. "offline" (default) uses
+# the deterministic AutoFakeLLMClient -- no AWS credentials required, safe
+# for a public demo deployment. "bedrock" uses the real BedrockClaudeClient
+# and requires AWS credentials with bedrock:InvokeModel. Controlled by the
+# BANKSHIELD_LLM_MODE environment variable, not a code change.
+LLM_MODE_ENV_VAR = "BANKSHIELD_LLM_MODE"
+LLM_MODE_OFFLINE = "offline"
+LLM_MODE_BEDROCK = "bedrock"
+LLM_MODE_DEFAULT = LLM_MODE_OFFLINE

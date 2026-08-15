@@ -507,6 +507,7 @@ call + any pending approval + token/cost/latency accounting) is an
 
 | Endpoint | Purpose |
 |---|---|
+| `GET /health` | Liveness check — `{"status": "ok"}` |
 | `GET /transactions/{id}`, `/transactions/{id}/risk` | Phase 1–3 passthrough |
 | `GET /customers/{id}/auth-history`, `/graph-neighbors` | Phase 2/3 passthrough |
 | `POST /policy/search` | RAG search over the policy corpus |
@@ -526,20 +527,51 @@ to ones that both exist in the corpus and were actually retrieved during
 that run — a citation to a real section the agent never looked up is
 dropped, not trusted.
 
-### Running against real Bedrock
+### Deployment mode: `BANKSHIELD_LLM_MODE`
 
-The default API dependency (`get_llm_client` in `api/app.py`) constructs
-`BedrockClaudeClient()`, which calls Amazon Bedrock's Converse API for
-`anthropic.claude-opus-5` (`config.BEDROCK_MODEL_ID_DEFAULT`,
-`config.BEDROCK_REGION_DEFAULT` — both overridable) via `boto3`. This
-requires AWS credentials with `bedrock:InvokeModel` for that model in your
-account/region; nothing in this repo has been run against a live Bedrock
-endpoint (no credentials in this environment), so treat the request/response
-handling as implemented-to-spec rather than field-tested. Run the
-evaluation harness with `--live` to exercise it for real:
+`api/app.py`'s `get_llm_client` dependency — which `LLMClient` backs
+`POST /investigations` — is selected by the `BANKSHIELD_LLM_MODE`
+environment variable, not a code change:
+
+| `BANKSHIELD_LLM_MODE` | Backend | Requires |
+|---|---|---|
+| `offline` (default) | `AutoFakeLLMClient` — deterministic, scripted | Nothing. Safe default for a public demo deployment. |
+| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API for `anthropic.claude-opus-5` (`config.BEDROCK_MODEL_ID_DEFAULT`, `config.BEDROCK_REGION_DEFAULT` — both overridable in `config.py`) | AWS credentials with `bedrock:InvokeModel` for that model in your account/region |
+
+Leaving `BANKSHIELD_LLM_MODE` unset means the deployed API serves real
+requests end-to-end (transactions, risk scores, investigations, the
+approval workflow) with **zero configuration and no AWS dependency** —
+this is the intended default for a publicly reachable demo. Nothing in
+this repo has been run against a live Bedrock endpoint (no AWS credentials
+in this development environment), so treat `bedrock` mode's request/response
+handling as implemented-to-spec rather than field-tested — verify it in
+your own AWS account before relying on it.
+
+**Deployment commands:**
 
 ```
-python scripts/13_evaluate_investigations.py --live
+# Public demo (default) — offline, no AWS credentials needed
+uvicorn bankshield.api.app:app --app-dir src --host 0.0.0.0 --port 8000
+
+# Explicit offline mode (equivalent to the default)
+BANKSHIELD_LLM_MODE=offline uvicorn bankshield.api.app:app --app-dir src --host 0.0.0.0 --port 8000
+
+# Real Bedrock/Claude backend — requires AWS credentials in the environment
+BANKSHIELD_LLM_MODE=bedrock uvicorn bankshield.api.app:app --app-dir src --host 0.0.0.0 --port 8000
+
+# Local development, auto-reload
+uvicorn bankshield.api.app:app --reload --app-dir src
+```
+
+An unrecognized `BANKSHIELD_LLM_MODE` value raises a clear `RuntimeError`
+(`Invalid BANKSHIELD_LLM_MODE=... ; expected 'offline' or 'bedrock'.`) the
+first time `get_llm_client` is resolved, rather than silently falling back
+to a default. The evaluation harness has its own, independent `--live` flag
+for the same offline/Bedrock choice:
+
+```
+python scripts/13_evaluate_investigations.py           # offline (default)
+python scripts/13_evaluate_investigations.py --live    # real Bedrock
 ```
 
 ### Evaluation

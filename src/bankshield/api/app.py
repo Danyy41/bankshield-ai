@@ -13,21 +13,29 @@ The LLM client is a FastAPI dependency (`get_llm_client`) rather than a
 module-level singleton specifically so tests can override it with
 `FakeLLMClient` via `app.dependency_overrides` and exercise the full API
 without AWS credentials -- see tests/test_api.py.
+
+Which backend `get_llm_client` returns is controlled by the
+`BANKSHIELD_LLM_MODE` environment variable (config.LLM_MODE_ENV_VAR):
+"offline" (default) -> AutoFakeLLMClient, "bedrock" -> BedrockClaudeClient.
+See the README's Phase 4 section for deployment commands.
 """
 
 from __future__ import annotations
 
+import os
 import uuid
+from functools import lru_cache
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
+from bankshield import config
 from bankshield.investigation import data_access
 from bankshield.investigation.agent import run_investigation
 from bankshield.investigation.approvals import get_approval_store
 from bankshield.investigation.case_store import get_case_store
-from bankshield.investigation.llm_client import BedrockClaudeClient, LLMClient
+from bankshield.investigation.llm_client import AutoFakeLLMClient, BedrockClaudeClient, LLMClient
 from bankshield.investigation.rag import search_policy
 from bankshield.investigation.schemas import Case, InvestigationResult, PendingApproval
 
@@ -47,10 +55,30 @@ app = FastAPI(
 _investigation_results: dict[str, InvestigationResult] = {}
 
 
+@lru_cache(maxsize=2)
+def _llm_client_for_mode(mode: str) -> LLMClient:
+    """One client instance per mode, reused across requests (a fresh
+    BedrockClaudeClient -- and its boto3 client -- per request would be
+    wasteful). Keyed by mode so a mid-process env var change (e.g. in
+    tests) still resolves to the right backend rather than a stale cache.
+    """
+    if mode == config.LLM_MODE_OFFLINE:
+        return AutoFakeLLMClient()
+    if mode == config.LLM_MODE_BEDROCK:
+        return BedrockClaudeClient()
+    raise RuntimeError(
+        f"Invalid {config.LLM_MODE_ENV_VAR}={mode!r}; expected "
+        f"{config.LLM_MODE_OFFLINE!r} or {config.LLM_MODE_BEDROCK!r}."
+    )
+
+
 def get_llm_client() -> LLMClient:
-    """Default dependency: the real Bedrock client. Overridden in tests
-    (and can be overridden at deploy time) to point at a different backend."""
-    return BedrockClaudeClient()
+    """Default dependency, selected by the BANKSHIELD_LLM_MODE environment
+    variable -- "offline" (default, AutoFakeLLMClient) or "bedrock"
+    (BedrockClaudeClient). Overridden directly in tests via
+    `app.dependency_overrides` regardless of this env var."""
+    mode = os.environ.get(config.LLM_MODE_ENV_VAR, config.LLM_MODE_DEFAULT)
+    return _llm_client_for_mode(mode)
 
 
 # --- Phase 1-3 passthrough endpoints ----------------------------------------
