@@ -1,0 +1,17 @@
+{
+  "accuracy": 0.9834,
+  "naive_always_legit_accuracy": 0.9862,
+  "precision": 0.4320388349514563,
+  "recall": 0.644927536231884,
+  "f1": 0.5174418604651163,
+  "roc_auc": 0.9246529645337542,
+  "pr_auc": 0.5507618224167203,
+  "confusion_matrix": {
+    "tn": 9745,
+    "fp": 117,
+    "fn": 49,
+    "tp": 89
+  },
+  "fraud_prevalence": 0.0138,
+  "n_test_samples": 10000
+}
