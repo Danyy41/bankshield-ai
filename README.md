@@ -4,7 +4,7 @@ BankShield AI is a portfolio project demonstrating production-style AI engineeri
 across financial crime detection, cybersecurity, and applied ML. It is being built
 in phases, each one a complete, working slice rather than a stub.
 
-**This repository currently implements Phase 1, Phase 2, and Phase 3.**
+**This repository currently implements Phase 1, Phase 2, Phase 3, and Phase 4.**
 
 ## Phase 1: fraud-detection ML baseline
 
@@ -68,9 +68,10 @@ leakage could otherwise be introduced.
 
 ```
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt    # includes fastapi/uvicorn/pydantic/boto3 for Phase 4
 
-python scripts/run_all.py          # runs the full Phase 1 + 2 + 3 pipeline (steps 1-12)
+python scripts/run_all.py          # runs the full Phase 1 + 2 + 3 + 4 pipeline (steps 1-13)
+uvicorn bankshield.api.app:app --reload --app-dir src   # serve the Phase 4 API locally
 ```
 
 Or step by step (Phase 1; see [Phase 2](#phase-2-cyber-authentication-telemetry) for steps 7-9):
@@ -172,7 +173,7 @@ category, risk-factor lift, correlation matrix) to `reports/figures/`.
 ```
 bankshield-ai/
 ├── src/bankshield/          # importable package — the actual logic
-│   ├── config.py            # paths, column lists, run parameters (Phase 1 + 2 + 3)
+│   ├── config.py            # paths, column lists, run parameters (Phase 1 + 2 + 3 + 4)
 │   ├── data_generation.py   # synthetic transaction generator (Phase 1)
 │   ├── features.py          # train/test split + preprocessing pipeline
 │   ├── modeling.py          # model definitions (LogReg, XGBoost)
@@ -181,15 +182,30 @@ bankshield-ai/
 │   ├── auth_generation.py   # synthetic login/session event generator (Phase 2)
 │   ├── cyber_features.py    # causal login-history -> transaction feature merge (Phase 2)
 │   ├── graph_generation.py  # beneficiary reconstruction + mule-ring injection (Phase 3)
-│   └── graph_features.py    # causal graph-relationship -> transaction feature merge (Phase 3)
-├── scripts/                 # thin, numbered, run-in-order entry points (01-06 Phase 1, 07-09 Phase 2, 10-12 Phase 3)
-├── tests/                   # data-generation, split, cyber-, and graph-feature sanity checks
-├── data/{raw,processed}/    # generated CSVs (gitignored, regenerate via scripts)
+│   ├── graph_features.py    # causal graph-relationship -> transaction feature merge (Phase 3)
+│   ├── investigation/       # Phase 4: AI-assisted investigation
+│   │   ├── schemas.py        # structured investigation payload (Pydantic)
+│   │   ├── data_access.py    # read-only access to Phase 1-3 models/data
+│   │   ├── policy_corpus.py  # parses data/policy_docs/ into citable chunks
+│   │   ├── rag.py            # TF-IDF retrieval over the policy corpus
+│   │   ├── llm_client.py     # LLMClient interface: Bedrock + offline fake
+│   │   ├── tools.py          # controlled tool registry + dispatch
+│   │   ├── approvals.py      # human-approval gate for consequential actions
+│   │   ├── case_store.py     # cases (created only after approval)
+│   │   ├── agent.py          # tool-use loop -> cited analyst explanation
+│   │   └── evaluation.py     # citation/faithfulness/cost/latency eval harness
+│   └── api/
+│       └── app.py            # FastAPI service layer (Phase 1-4 endpoints)
+├── scripts/                 # thin, numbered, run-in-order entry points (01-06 Phase 1, 07-09 Phase 2, 10-12 Phase 3, 13 Phase 4)
+├── tests/                   # data-generation, split, cyber-, graph-, and investigation-layer sanity checks
+├── data/
+│   ├── {raw,processed}/     # generated CSVs (gitignored, regenerate via scripts)
+│   └── policy_docs/         # synthetic AML/fraud/ATO/case/KYC policy docs (versioned, Phase 4)
 ├── models/                  # saved joblib pipelines (gitignored, regenerate via scripts)
 └── reports/
     ├── metrics/              # evaluation JSON (versioned)
     ├── figures/              # EDA + evaluation plots (gitignored, regenerate via scripts)
-    └── *.md                  # EDA and model-comparison write-ups (versioned)
+    └── *.md                  # EDA, model-comparison, and Phase 4 eval/architecture write-ups (versioned)
 ```
 
 Preprocessing (`StandardScaler` + `OneHotEncoder`) lives inside the same
@@ -417,15 +433,186 @@ caught the self-loop bug — a customer reusing their own device before
 anyone else touches it), graph feature correlation with fraud on
 generated data, and row/column preservation checks.
 
+## Phase 4: AI-assisted financial crime investigation
+
+Phases 1–3 produce risk scores and features. Phase 4 turns that pipeline
+into something an analyst can actually work with: a service layer that
+exposes the model's outputs, an LLM-powered agent (Amazon Bedrock + Claude)
+that gathers evidence through controlled tools and explains *why* an alert
+fired with citations to policy, and a human-approval gate so the agent can
+never take a consequential action on its own. Phase 1–3 code and data are
+untouched — everything below only *reads* what those phases already
+produce.
+
+### Why this design
+
+**A clean service layer, not a rewrite.** `src/bankshield/investigation/`
+is a new package that reads Phase 1–3's trained model and CSVs through one
+module (`data_access.py`) and never modifies them. Explanations for a
+transaction's risk score use XGBoost's own `pred_contribs` output — exact,
+per-transaction feature attribution built into the library already used —
+instead of adding a `shap` dependency.
+
+**RAG over a local TF-IDF index, not an embeddings API.** `data/policy_docs/`
+holds six synthetic AML/fraud/ATO/case-management/KYC/mule-network policy
+documents (`POL-XXX-NNN`, section-numbered for citation, e.g.
+`POL-ATO-003 §2.1`). Retrieval (`investigation/rag.py`) uses scikit-learn's
+`TfidfVectorizer` — a dependency the project already has — chunked by the
+documents' own section structure rather than a fixed-size window, so a
+citation reads naturally and retrieves cleanly. This keeps retrieval
+deterministic and network-free, which matters twice over: the test suite
+and the evaluation harness both need to run the same way every time,
+without AWS credentials.
+
+**An `LLMClient` interface, with Bedrock and a scripted offline
+implementation.** `investigation/llm_client.py` defines the contract as
+Amazon Bedrock's Converse API shape directly (no extra translation layer),
+with two implementations: `BedrockClaudeClient` (real, via `boto3`) and
+`FakeLLMClient` / `AutoFakeLLMClient` (deterministic, offline). This sandbox
+has no AWS credentials, so every test and the default evaluation run
+against the fake client — it is a legitimate implementation of the same
+tool-use loop, not a mock, which is what lets `agent.py`'s orchestration be
+exercised end-to-end in CI. Point the API at `BedrockClaudeClient()` (the
+default `get_llm_client` dependency) to use the real model; see
+[Running against real Bedrock](#running-against-real-bedrock).
+
+**Six controlled tools, one of them gated.** The agent can call
+`get_transaction`, `get_risk_score`, `get_auth_history`,
+`get_graph_neighbors`, and `search_policy` freely — all read-only. The
+sixth, `create_case`, is different: per `POL-CASE-004 §3`, naming a
+customer in a case is a *consequential action*. Calling the tool never
+creates anything — it files a `PendingApproval`
+(`investigation/approvals.py`) and returns that pending state to the agent,
+which must report it as pending, not as done. Only a separate, explicit
+`POST /approvals/{id}/decision` call — a human reviewer's decision — can
+turn a proposal into a `Case`. This is enforced in code (there is no
+function that goes straight from a tool call to a created case), not just
+requested in the system prompt.
+
+### Structured investigation payload
+
+`investigation/schemas.py` defines the grounding context every
+investigation is built from: `TransactionRisk` (score, tier, top
+contributing features with signed contributions), `CyberSignals`,
+`GraphSignals`, raw `TransactionEvidence`, recent `AuthEvent`s,
+`GraphNeighbor`s, and `PolicyCitation`s retrieved for the alert —
+assembled into one `InvestigationPayload` before the agent's tool-use loop
+even starts. The full run (payload + narrative + citations + every tool
+call + any pending approval + token/cost/latency accounting) is an
+`InvestigationResult`.
+
+### API surface
+
+`src/bankshield/api/app.py` (FastAPI):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /transactions/{id}`, `/transactions/{id}/risk` | Phase 1–3 passthrough |
+| `GET /customers/{id}/auth-history`, `/graph-neighbors` | Phase 2/3 passthrough |
+| `POST /policy/search` | RAG search over the policy corpus |
+| `POST /investigations` | Run the agent on a transaction_id |
+| `GET /investigations/{id}` | Retrieve a prior run |
+| `GET /approvals`, `POST /approvals/{id}/decision` | The human-approval queue |
+| `GET /cases`, `GET /cases/{id}` | Cases created only after approval |
+
+### Analyst-facing explanations, grounded and cited
+
+The agent's system prompt requires every factual claim to come from a tool
+call (risk score before describing risk, auth history before describing
+login behavior, policy search before citing policy) and every policy
+citation to reference a passage it actually retrieved, formatted
+`[DOC-ID §section]`. `agent.py` then filters the narrative's citations down
+to ones that both exist in the corpus and were actually retrieved during
+that run — a citation to a real section the agent never looked up is
+dropped, not trusted.
+
+### Running against real Bedrock
+
+The default API dependency (`get_llm_client` in `api/app.py`) constructs
+`BedrockClaudeClient()`, which calls Amazon Bedrock's Converse API for
+`anthropic.claude-opus-5` (`config.BEDROCK_MODEL_ID_DEFAULT`,
+`config.BEDROCK_REGION_DEFAULT` — both overridable) via `boto3`. This
+requires AWS credentials with `bedrock:InvokeModel` for that model in your
+account/region; nothing in this repo has been run against a live Bedrock
+endpoint (no credentials in this environment), so treat the request/response
+handling as implemented-to-spec rather than field-tested. Run the
+evaluation harness with `--live` to exercise it for real:
+
+```
+python scripts/13_evaluate_investigations.py --live
+```
+
+### Evaluation
+
+`scripts/13_evaluate_investigations.py` runs the agent over a golden set of
+transactions spread across all three risk tiers (`POL-AML-001 §2.1`) and
+reports:
+
+- **Citation correctness** — of every `[DOC-ID §section]` citation, the
+  fraction that both exist in the corpus and were actually retrieved this
+  run (not just present somewhere in the corpus — an ungrounded-but-real
+  citation still counts as wrong).
+- **Evidence faithfulness** — whether numeric/boolean claims in the
+  narrative (the stated risk score, ATO-pattern claims) match the actual
+  payload values.
+- **Tool-call success rate** — fraction of tool calls that didn't error.
+- **Latency** and **estimated cost** — wall-clock time and a list-price
+  token-cost estimate per investigation.
+
+Offline mode (default, `AutoFakeLLMClient`, no AWS credentials) is what
+runs in CI and via `run_all.py`; pass `--live` to evaluate the real Bedrock
+backend instead. Current offline numbers (13 investigations, 4–5 per tier):
+
+| Metric | Value |
+|---|---|
+| Citation correctness | 1.000 |
+| Evidence faithfulness | 1.000 |
+| Tool-call success rate | 1.000 |
+| Mean latency | ~80 ms |
+
+These numbers describe the scripted offline agent's self-consistency (it
+always cites what it just retrieved and states the score it just looked
+up) — they are a regression guard on the harness and the grounding/citation
+mechanism, not a claim about a live LLM's behavior. A `--live` run against
+real Bedrock is expected to score lower on citation correctness and
+evidence faithfulness, since a real model can still misquote or omit a
+citation despite the grounding; that gap is exactly what this harness
+exists to measure. Full write-up: [`reports/phase4_eval.md`](reports/phase4_eval.md).
+
+### Tests
+
+`tests/test_policy_corpus_and_rag.py`, `test_data_access.py`,
+`test_llm_client.py`, `test_tools_and_approvals.py`, `test_agent.py`,
+`test_api.py`, and `test_evaluation.py` add: policy-document chunking and
+citation-label correctness, RAG retrieval relevance, data-access causality
+(auth history drill-down never surfaces a login at or after the queried
+transaction's own timestamp) and neighbor-graph symmetry, the risk-score
+tool's feature attribution, full tool dispatch, the human-approval gate
+(a `create_case` call never creates a case directly; only an explicit
+approval decision does — tested at both the tool layer and the FastAPI
+layer), end-to-end agent runs on real Tier 1/2/3 transactions from the
+generated dataset, citation filtering against a deliberately fabricated
+citation, and the evaluation harness's determinism and aggregation. None of
+this touches or reruns Phase 1–3's own tests, which continue to pass
+unmodified.
+
+### Architecture write-up
+
+See [`reports/phase4_architecture.md`](reports/phase4_architecture.md) for
+a fuller discussion of the design decisions above, including the tradeoffs
+deliberately deferred (a production vector DB and embeddings backend for
+RAG, a durable approval/case store instead of in-memory, and Phase 5's
+planned adversarial testing of the agent itself).
+
 ## Roadmap
 
-Phase 1, 2, and 3 (this repo) are the classical ML + cyber-telemetry +
-graph-intelligence foundation. Planned next:
+Phase 1, 2, 3, and 4 (this repo) are the classical ML + cyber-telemetry +
+graph-intelligence foundation, plus the AI-assisted investigation layer on
+top of it. Planned next:
 
-- **Phase 4** — AWS deployment (SageMaker/Lambda serving), Bedrock, RAG over
-  fraud policy/case documents, and agentic investigation workflows.
-- **Phase 5** — AI-security testing of the resulting system (prompt
-  injection, model evasion, adversarial robustness).
+- **Phase 5** — AI-security testing of the Phase 4 system (prompt
+  injection against the agent and its tools, attempts to bypass the
+  human-approval gate, model evasion, adversarial robustness).
 
 ## License
 
