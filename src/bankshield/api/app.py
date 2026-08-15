@@ -18,6 +18,13 @@ Which backend `get_llm_client` returns is controlled by the
 `BANKSHIELD_LLM_MODE` environment variable (config.LLM_MODE_ENV_VAR):
 "offline" (default) -> AutoFakeLLMClient, "bedrock" -> BedrockClaudeClient.
 See the README's Phase 4 section for deployment commands.
+
+CORS is open (allow_origins=["*"]) so the static frontend (frontend/,
+served from a different origin -- a laptop's file://, a static host, a
+different port) can call this API from the browser. This is transport
+plumbing, not business logic: no endpoint gains new behavior, and every
+consequential action is still gated behind human approval regardless of
+which origin called it.
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ from functools import lru_cache
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from bankshield import config
@@ -47,6 +55,13 @@ app = FastAPI(
         "on consequential actions."
     ),
     version="4.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 # transaction_id -> InvestigationResult, most-recent run wins. In-memory,

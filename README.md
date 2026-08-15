@@ -543,6 +543,37 @@ cached after its first call — tier_1 alerts are rare in this dataset (see
 POL-AML-001 §2.1), so finding a couple can mean scoring a few hundred
 candidates; the endpoint pays that cost once per process, not per request.
 
+### Frontend
+
+`frontend/index.html` is a single self-contained static page (no build
+step, no framework, no npm dependency — plain HTML/CSS/JS) that drives the
+API above end to end: pick one of the sample transactions, run an
+investigation, and see the risk score/tier, transaction evidence, cyber
+signals, graph signals, the narrative (with policy citations highlighted
+inline), the cited-passage cards, and approval status — including working
+Approve/Reject buttons that call `POST /approvals/{id}/decision` and
+render the resulting case's approval, live. It doesn't touch or duplicate
+any backend logic — every value it displays comes straight from
+`InvestigationResult`.
+
+Open it directly (`frontend/index.html`) or serve it with any static file
+server:
+
+```
+python -m http.server 8080 --directory frontend
+# then open http://localhost:8080
+```
+
+The **API URL** field at the top right is editable and persisted in
+`localStorage` — point it at wherever the API is deployed. It defaults to
+`http://localhost:8000` when opened as a local file, or the page's own
+origin when served from somewhere else (e.g. mounted behind the same
+reverse proxy as the API). Because the frontend runs in the browser as a
+separate origin from the API by default, the API enables CORS
+(`allow_origins=["*"]`) purely as transport plumbing for this — no
+endpoint's behavior changes, and every consequential action is still
+gated behind human approval regardless of which origin calls it.
+
 ### Analyst-facing explanations, grounded and cited
 
 The agent's system prompt requires every factual claim to come from a tool

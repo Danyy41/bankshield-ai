@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BankShield AI — Investigation Dashboard</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --page-plane:     #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --border:         rgba(11,11,11,0.10);
+    --accent:         #2a78d6;
+    --accent-tint:    #eaf1fb;
+    --good:           #0ca30c;
+    --good-tint:      #e6f6e6;
+    --warning:        #b3790f;
+    --warning-tint:   #fef3da;
+    --critical:       #d03b3b;
+    --critical-tint:  #fbe8e8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --page-plane:     #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --border:         rgba(255,255,255,0.10);
+      --accent:         #3987e5;
+      --accent-tint:    #16283d;
+      --good:           #0ca30c;
+      --good-tint:      #123a12;
+      --warning:        #f0b429;
+      --warning-tint:   #3d2f0c;
+      --critical:       #e66767;
+      --critical-tint:  #3d1414;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--page-plane);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px 64px; }
+
+  header.top {
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-1);
+    margin-bottom: 28px;
+  }
+  header.top .wrap { padding-top: 22px; padding-bottom: 18px; }
+  .brand { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .brand h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+  .brand .tag { color: var(--text-secondary); font-size: 13px; margin-top: 2px; }
+  .brand-left { display: flex; flex-direction: column; }
+
+  .settings { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-secondary); }
+  .settings label { white-space: nowrap; }
+  .settings input {
+    font: inherit;
+    font-size: 12.5px;
+    padding: 5px 8px;
+    border: 1px solid var(--gridline);
+    border-radius: 6px;
+    background: var(--page-plane);
+    color: var(--text-primary);
+    width: 210px;
+  }
+  .settings .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex: none; }
+  .settings .dot.ok { background: var(--good); }
+  .settings .dot.err { background: var(--critical); }
+
+  h2.section-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin: 36px 0 12px;
+    font-weight: 600;
+  }
+  h2.section-title:first-of-type { margin-top: 0; }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+
+  /* --- sample transaction picker --- */
+  .sample-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .sample-card {
+    text-align: left;
+    background: var(--surface-1);
+    border: 1px solid var(--gridline);
+    border-radius: 10px;
+    padding: 12px 14px;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  .sample-card:hover { border-color: var(--accent); }
+  .sample-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-tint); }
+  .sample-card .txid {
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+    color: var(--text-secondary);
+    word-break: break-all;
+    margin-bottom: 8px;
+  }
+  .sample-card .score { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.01em;
+    padding: 3px 9px; border-radius: 999px;
+  }
+  .badge .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .badge.critical { background: var(--critical-tint); color: var(--critical); }
+  .badge.critical .dot { background: var(--critical); }
+  .badge.warning  { background: var(--warning-tint); color: var(--warning); }
+  .badge.warning .dot  { background: var(--warning); }
+  .badge.good     { background: var(--good-tint); color: var(--good); }
+  .badge.good .dot     { background: var(--good); }
+  .badge.neutral  { background: var(--gridline); color: var(--text-secondary); }
+  .badge.neutral .dot  { background: var(--text-muted); }
+
+  .actions { margin-top: 18px; display: flex; align-items: center; gap: 12px; }
+  button.primary {
+    font: inherit; font-weight: 600; font-size: 14px;
+    background: var(--accent); color: #fff; border: none;
+    padding: 10px 18px; border-radius: 8px; cursor: pointer;
+  }
+  button.primary:disabled { background: var(--gridline); color: var(--text-muted); cursor: not-allowed; }
+  button.secondary {
+    font: inherit; font-weight: 600; font-size: 12.5px;
+    background: transparent; color: var(--text-secondary);
+    border: 1px solid var(--gridline); padding: 7px 12px; border-radius: 7px; cursor: pointer;
+  }
+  button.small {
+    font: inherit; font-weight: 600; font-size: 12px;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; border: none;
+  }
+  button.approve { background: var(--good); color: #fff; }
+  button.reject { background: transparent; color: var(--critical); border: 1px solid var(--critical); }
+  button.small:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .status-line { font-size: 13px; color: var(--text-secondary); min-height: 18px; }
+  .status-line.err { color: var(--critical); }
+
+  /* --- results --- */
+  #results { display: none; }
+  #results.visible { display: block; }
+
+  .risk-row { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; }
+  .risk-score { font-size: 44px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+  .risk-score small { font-size: 16px; font-weight: 500; color: var(--text-muted); }
+  .risk-meta { display: flex; flex-direction: column; gap: 8px; }
+  .risk-meta .txid { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; word-break: break-all; }
+
+  dl.evidence { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px 20px; margin: 0; }
+  dl.evidence dt { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
+  dl.evidence dd { margin: 0; font-size: 14.5px; font-variant-numeric: tabular-nums; }
+
+  .signal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; }
+  .signal-tile { border: 1px solid var(--gridline); border-radius: 8px; padding: 12px 14px; }
+  .signal-tile .label { font-size: 11.5px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+  .signal-tile .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .narrative { font-size: 15px; line-height: 1.65; white-space: pre-wrap; }
+  .narrative mark { background: var(--accent-tint); color: var(--accent); padding: 0 3px; border-radius: 3px; font-weight: 600; }
+
+  .citation { border: 1px solid var(--gridline); border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; }
+  .citation:last-child { margin-bottom: 0; }
+  .citation .cite-head { font-size: 12.5px; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+  .citation .cite-text { font-size: 13.5px; color: var(--text-secondary); line-height: 1.5; }
+
+  .approval-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    border: 1px solid var(--gridline); border-radius: 8px; padding: 12px 14px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .approval-row:last-child { margin-bottom: 0; }
+  .approval-left { display: flex; flex-direction: column; gap: 4px; min-width: 220px; }
+  .approval-left .action { font-size: 13.5px; font-weight: 600; }
+  .approval-left .rationale { font-size: 12.5px; color: var(--text-secondary); max-width: 480px; }
+  .approval-right { display: flex; align-items: center; gap: 8px; }
+
+  .empty-note { font-size: 13.5px; color: var(--text-secondary); }
+
+  footer { margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-muted); }
+  footer a { color: var(--text-muted); }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spinner {
+    display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+    border: 2px solid var(--gridline); border-top-color: var(--accent);
+    animation: spin .7s linear infinite; vertical-align: -2px; margin-right: 6px;
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <div class="brand-left">
+        <h1>BankShield AI</h1>
+        <div class="tag">Phase 4 — AI-assisted financial crime investigation (demo)</div>
+      </div>
+      <div class="settings">
+        <span class="dot" id="api-dot"></span>
+        <label for="api-base">API URL</label>
+        <input id="api-base" type="text" spellcheck="false" autocomplete="off">
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <h2 class="section-title">1 · Choose a sample transaction</h2>
+  <div class="card">
+    <div id="samples-status" class="status-line">Loading sample transactions…</div>
+    <div id="sample-grid" class="sample-grid"></div>
+    <div class="actions">
+      <button id="run-btn" class="primary" disabled>Run investigation</button>
+      <button id="reload-samples" class="secondary">Reload samples</button>
+      <span id="run-status" class="status-line"></span>
+    </div>
+  </div>
+
+  <div id="results">
+
+    <h2 class="section-title">2 · Risk assessment</h2>
+    <div class="card">
+      <div class="risk-row">
+        <div class="risk-score" id="risk-score">—</div>
+        <div class="risk-meta">
+          <div id="risk-badges"></div>
+          <div class="txid" id="risk-txid"></div>
+        </div>
+      </div>
+    </div>
+
+    <h2 class="section-title">3 · Transaction evidence</h2>
+    <div class="card">
+      <dl class="evidence" id="evidence-list"></dl>
+    </div>
+
+    <h2 class="section-title">4 · Cyber signals</h2>
+    <div class="card">
+      <div class="signal-grid" id="cyber-grid"></div>
+    </div>
+
+    <h2 class="section-title">5 · Graph signals</h2>
+    <div class="card">
+      <div class="signal-grid" id="graph-grid"></div>
+    </div>
+
+    <h2 class="section-title">6 · Investigation narrative</h2>
+    <div class="card">
+      <div class="narrative" id="narrative"></div>
+    </div>
+
+    <h2 class="section-title">7 · Policy citations</h2>
+    <div class="card">
+      <div id="citations"></div>
+    </div>
+
+    <h2 class="section-title">8 · Approval status</h2>
+    <div class="card">
+      <div id="approvals"></div>
+    </div>
+
+  </div>
+
+  <footer>
+    Synthetic data, synthetic policy documents — a portfolio demonstration, not a real bank.
+    Consequential actions (e.g. case creation) always require explicit human approval —
+    see <code>POL-CASE-004 §3</code>.
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  const DEFAULT_API_BASE = window.location.protocol === "file:"
+    ? "http://localhost:8000"
+    : window.location.origin;
+
+  const apiBaseInput = document.getElementById("api-base");
+  const apiDot = document.getElementById("api-dot");
+  apiBaseInput.value = localStorage.getItem("bankshield_api_base") || DEFAULT_API_BASE;
+  apiBaseInput.addEventListener("change", () => {
+    localStorage.setItem("bankshield_api_base", apiBaseInput.value.trim());
+    checkHealth();
+    loadSamples();
+  });
+
+  function apiBase() {
+    return (apiBaseInput.value || DEFAULT_API_BASE).replace(/\/+$/, "");
+  }
+
+  async function api(path, options) {
+    const res = await fetch(apiBase() + path, Object.assign(
+      { headers: { "content-type": "application/json" } }, options || {}
+    ));
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json()).detail || detail; } catch (e) {}
+      throw new Error(`${res.status} ${detail}`);
+    }
+    return res.json();
+  }
+
+  async function checkHealth() {
+    try {
+      await api("/health");
+      apiDot.className = "dot ok";
+      apiDot.title = "API reachable";
+    } catch (e) {
+      apiDot.className = "dot err";
+      apiDot.title = "API unreachable: " + e.message;
+    }
+  }
+
+  // --- formatting helpers ---------------------------------------------
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[c]);
+  }
+
+  function tierBadge(tier) {
+    const map = {
+      tier_1: ["critical", "Tier 1 — High risk"],
+      tier_2: ["warning", "Tier 2 — Elevated risk"],
+      tier_3: ["good", "Tier 3 — Monitored"],
+    };
+    const [cls, label] = map[tier] || ["neutral", tier];
+    return `<span class="badge ${cls}"><span class="dot"></span>${label}</span>`;
+  }
+
+  function dispositionBadge(disposition) {
+    const map = {
+      confirmed_fraud: ["critical", "Confirmed fraud"],
+      inconclusive_monitor: ["warning", "Inconclusive / monitor"],
+      false_positive: ["good", "False positive"],
+    };
+    const [cls, label] = map[disposition] || ["neutral", disposition];
+    return `<span class="badge ${cls}"><span class="dot"></span>${label}</span>`;
+  }
+
+  function approvalBadge(status) {
+    const map = {
+      pending: ["warning", "Pending human approval"],
+      approved: ["good", "Approved"],
+      rejected: ["critical", "Rejected"],
+    };
+    const [cls, label] = map[status] || ["neutral", status];
+    return `<span class="badge ${cls}"><span class="dot"></span>${label}</span>`;
+  }
+
+  function boolBadge(value) {
+    return value
+      ? '<span class="badge warning"><span class="dot"></span>Yes</span>'
+      : '<span class="badge good"><span class="dot"></span>No</span>';
+  }
+
+  function fmtPct(x) { return (x * 100).toFixed(1) + "%"; }
+
+  function highlightCitations(text) {
+    return escapeHtml(text).replace(
+      /\[(POL-[A-Z0-9-]+)\s+(§[\d.]+(?:\s*\(cont\.\s*\d+\))?)\]/g,
+      (m) => `<mark>${m}</mark>`
+    );
+  }
+
+  // --- sample transaction picker ---------------------------------------
+
+  let selectedTxnId = null;
+  let samplesRequestId = 0; // guards against overlapping loadSamples() calls
+                             // (e.g. editing the API URL then clicking "Reload"
+                             // before the first request resolves) rendering a
+                             // stale response on top of a newer one.
+
+  async function loadSamples() {
+    const requestId = ++samplesRequestId;
+    const status = document.getElementById("samples-status");
+    const grid = document.getElementById("sample-grid");
+    status.textContent = "Loading sample transactions…";
+    status.classList.remove("err");
+    grid.innerHTML = "";
+    selectedTxnId = null;
+    document.getElementById("run-btn").disabled = true;
+
+    try {
+      const data = await api("/demo/sample-transactions?n=5");
+      if (requestId !== samplesRequestId) return; // a newer call already landed
+      status.textContent = "";
+      data.transactions.forEach((t) => {
+        const el = document.createElement("button");
+        el.type = "button";
+        el.className = "sample-card";
+        el.innerHTML = `
+          <div class="txid">${escapeHtml(t.transaction_id)}</div>
+          <div class="score">${fmtPct(t.risk_score)}</div>
+          <div style="margin-top:8px">${tierBadge(t.risk_tier)}</div>
+        `;
+        el.addEventListener("click", () => {
+          selectedTxnId = t.transaction_id;
+          document.querySelectorAll(".sample-card").forEach((c) => c.classList.remove("selected"));
+          el.classList.add("selected");
+          document.getElementById("run-btn").disabled = false;
+        });
+        grid.appendChild(el);
+      });
+    } catch (e) {
+      if (requestId !== samplesRequestId) return; // a newer call already landed
+      status.textContent = "Could not reach the API at " + apiBase() + " — " + e.message +
+        ". Check the API URL above (CORS must be enabled on the server).";
+      status.classList.add("err");
+    }
+    checkHealth();
+  }
+
+  document.getElementById("reload-samples").addEventListener("click", loadSamples);
+
+  // --- run investigation -------------------------------------------------
+
+  document.getElementById("run-btn").addEventListener("click", async () => {
+    if (!selectedTxnId) return;
+    const runBtn = document.getElementById("run-btn");
+    const runStatus = document.getElementById("run-status");
+    runBtn.disabled = true;
+    runStatus.classList.remove("err");
+    runStatus.innerHTML = '<span class="spinner"></span>Running investigation — gathering evidence, retrieving policy, generating explanation…';
+
+    try {
+      const result = await api("/investigations", {
+        method: "POST",
+        body: JSON.stringify({ transaction_id: selectedTxnId }),
+      });
+      runStatus.textContent = "Done.";
+      renderResults(result);
+      document.getElementById("results").classList.add("visible");
+      document.getElementById("results").scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (e) {
+      runStatus.textContent = "Investigation failed: " + e.message;
+      runStatus.classList.add("err");
+    } finally {
+      runBtn.disabled = false;
+    }
+  });
+
+  // --- render results ------------------------------------------------------
+
+  function renderResults(result) {
+    const payload = result.payload;
+
+    // 2. risk
+    document.getElementById("risk-score").innerHTML =
+      fmtPct(payload.risk.risk_score) + " <small>fraud probability</small>";
+    document.getElementById("risk-badges").innerHTML =
+      tierBadge(payload.risk.risk_tier) + " " + dispositionBadge(result.disposition);
+    document.getElementById("risk-txid").textContent = "Transaction " + result.transaction_id;
+
+    // 3. transaction evidence
+    const t = payload.transaction;
+    const evidence = [
+      ["Amount", "$" + Number(t.amount).toLocaleString(undefined, { minimumFractionDigits: 2 })],
+      ["Merchant category", t.merchant_category],
+      ["Timestamp", new Date(t.timestamp).toLocaleString()],
+      ["Customer", t.customer_id],
+      ["Home country", t.home_country],
+      ["Transaction country", t.country + (t.country_mismatch ? " (mismatch)" : "")],
+      ["Device", t.device_id + (t.new_device ? " (new)" : "")],
+      ["IP address", t.ip_address],
+      ["Account age", t.account_age_days + " days"],
+      ["Velocity (24h)", t.transaction_velocity_24h + " txns"],
+      ["New beneficiary", t.new_beneficiary ? "Yes" : "No"],
+      ["Amount vs. customer avg", (t.amount_to_avg_ratio).toFixed(2) + "x"],
+      ["Night-time transaction", t.is_night ? "Yes" : "No"],
+    ];
+    document.getElementById("evidence-list").innerHTML = evidence.map(
+      ([k, v]) => `<div><dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd></div>`
+    ).join("");
+
+    // 4. cyber signals
+    const c = payload.cyber_signals;
+    const cyberTiles = [
+      ["Failed logins (1h)", c.failed_logins_1h],
+      ["Login count (24h)", c.login_count_24h],
+      ["Minutes since last login", Math.round(c.minutes_since_last_login)],
+      ["New device recently", boolBadge(c.new_device_recent)],
+      ["Unusual country recently", boolBadge(c.unusual_country_recent)],
+      ["Recent suspicious auth (ATO pattern)", boolBadge(c.recent_suspicious_auth)],
+    ];
+    document.getElementById("cyber-grid").innerHTML = cyberTiles.map(
+      ([label, value]) => `<div class="signal-tile"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`
+    ).join("");
+
+    // 5. graph signals
+    const g = payload.graph_signals;
+    const graphTiles = [
+      ["Shared device count", g.shared_device_count],
+      ["Shared IP count", g.shared_ip_count],
+      ["Beneficiary connectivity", g.beneficiary_connectivity],
+      ["Suspicious neighbor count", g.suspicious_neighbor_count],
+      ["Account network risk", fmtPct(g.account_network_risk)],
+    ];
+    document.getElementById("graph-grid").innerHTML = graphTiles.map(
+      ([label, value]) => `<div class="signal-tile"><div class="label">${escapeHtml(label)}</div><div class="value">${value}</div></div>`
+    ).join("");
+
+    // 6. narrative
+    document.getElementById("narrative").innerHTML = highlightCitations(result.narrative || "(no narrative produced)");
+
+    // 7. citations
+    const citationsEl = document.getElementById("citations");
+    if (!result.citations || result.citations.length === 0) {
+      citationsEl.innerHTML = '<div class="empty-note">No policy citations were grounded in retrieved passages for this narrative.</div>';
+    } else {
+      citationsEl.innerHTML = result.citations.map((c) => `
+        <div class="citation">
+          <div class="cite-head">${escapeHtml(c.doc_id)} ${escapeHtml(c.section)} — ${escapeHtml(c.title.split("—").pop().trim())}</div>
+          <div class="cite-text">${escapeHtml(c.text)}</div>
+        </div>
+      `).join("");
+    }
+
+    // 8. approval status
+    renderApprovals(result.pending_approvals || [], result.disposition);
+  }
+
+  function renderApprovals(approvals, disposition) {
+    const el = document.getElementById("approvals");
+    if (approvals.length === 0) {
+      el.innerHTML = `<div class="empty-note">
+        No consequential action was proposed for this investigation
+        (disposition: ${escapeHtml(disposition)}). Per <code>POL-CASE-004 §3</code>,
+        only alerts recommending case creation generate an approval request.
+      </div>`;
+      return;
+    }
+    el.innerHTML = "";
+    approvals.forEach((a) => renderApprovalRow(el, a));
+  }
+
+  function renderApprovalRow(container, approval) {
+    const row = document.createElement("div");
+    row.className = "approval-row";
+    row.dataset.approvalId = approval.approval_id;
+
+    function paint(a) {
+      const isPending = a.status === "pending";
+      row.innerHTML = `
+        <div class="approval-left">
+          <div class="action">${escapeHtml(a.action)} — ${escapeHtml(a.approval_id)}</div>
+          <div class="rationale">${escapeHtml(a.rationale)}</div>
+        </div>
+        <div class="approval-right">
+          ${approvalBadge(a.status)}
+          ${isPending ? `
+            <button class="small approve" data-act="approve">Approve</button>
+            <button class="small reject" data-act="reject">Reject</button>
+          ` : `<span class="empty-note">${a.reviewer ? "by " + escapeHtml(a.reviewer) : ""}</span>`}
+        </div>
+      `;
+      if (isPending) {
+        row.querySelector('[data-act="approve"]').addEventListener("click", () => decide(a, true));
+        row.querySelector('[data-act="reject"]').addEventListener("click", () => decide(a, false));
+      }
+    }
+
+    async function decide(a, approved) {
+      const buttons = row.querySelectorAll("button");
+      buttons.forEach((b) => (b.disabled = true));
+      try {
+        const updated = await api(`/approvals/${a.approval_id}/decision`, {
+          method: "POST",
+          body: JSON.stringify({
+            approved: approved,
+            reviewer: "Recruiter Demo",
+            notes: approved ? "Approved from the demo dashboard." : "Rejected from the demo dashboard.",
+          }),
+        });
+        paint(updated);
+      } catch (e) {
+        buttons.forEach((b) => (b.disabled = false));
+        alert("Could not record decision: " + e.message);
+      }
+    }
+
+    paint(approval);
+    container.appendChild(row);
+  }
+
+  // --- boot ---------------------------------------------------------------
+
+  checkHealth();
+  loadSamples();
+})();
+</script>
+</body>
+</html>

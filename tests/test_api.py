@@ -39,6 +39,14 @@ def test_health(client):
     assert response.json() == {"status": "ok"}
 
 
+def test_cors_allows_cross_origin_requests(client):
+    """The static frontend (frontend/index.html) is served from a different
+    origin than the API by default -- CORS must be enabled or the browser
+    blocks every request it makes."""
+    response = client.get("/health", headers={"origin": "https://example.com"})
+    assert response.headers.get("access-control-allow-origin") == "*"
+
+
 def test_get_transaction(client, tier1_transaction_id):
     response = client.get(f"/transactions/{tier1_transaction_id}")
     assert response.status_code == 200
