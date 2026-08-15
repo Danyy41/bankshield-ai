@@ -1,4 +1,4 @@
-"""Run the entire Phase 1 + Phase 2 pipeline end to end, in order:
+"""Run the entire Phase 1 + Phase 2 + Phase 3 pipeline end to end, in order:
 
 Phase 1 (fraud-detection ML baseline):
 1. Generate synthetic transactions
@@ -12,6 +12,11 @@ Phase 2 (cyber-authentication telemetry):
 7. Generate synthetic login/session events
 8. Merge cyber features onto transactions, re-split
 9. Train + compare transaction-only vs. transaction+cyber XGBoost
+
+Phase 3 (graph-based financial crime intelligence):
+10. Generate graph relationships (beneficiary IDs, mule rings)
+11. Merge graph features onto transactions, re-split
+12. Train + compare transaction+cyber vs. transaction+cyber+graph XGBoost
 
 Usage:
     python scripts/run_all.py
@@ -32,6 +37,9 @@ STEPS = [
     "07_generate_login_events.py",
     "08_add_cyber_features.py",
     "09_train_compare_cyber.py",
+    "10_generate_graph_relationships.py",
+    "11_add_graph_features.py",
+    "12_train_compare_graph.py",
 ]
 
 

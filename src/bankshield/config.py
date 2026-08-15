@@ -149,3 +149,46 @@ CYBER_FEATURE_COLUMNS = CYBER_NUMERIC_FEATURES + CYBER_BINARY_FEATURES
 
 # Transaction-only feature set (Phase 1, unchanged) + cyber telemetry.
 FEATURE_COLUMNS_WITH_CYBER = FEATURE_COLUMNS + CYBER_FEATURE_COLUMNS
+
+
+# =========================================================================
+# Phase 3: graph-based financial crime intelligence
+# =========================================================================
+# Everything below is additive -- it reads Phase 1/2's already-fixed data
+# and never modifies it or the constants above.
+
+GRAPH_ENTITIES_CSV = DATA_RAW_DIR / "graph_entities.csv"
+TRANSACTIONS_WITH_GRAPH_CSV = DATA_PROCESSED_DIR / "transactions_with_graph.csv"
+TRAIN_WITH_GRAPH_CSV = DATA_PROCESSED_DIR / "train_with_graph.csv"
+TEST_WITH_GRAPH_CSV = DATA_PROCESSED_DIR / "test_with_graph.csv"
+
+XGBOOST_WITH_GRAPH_MODEL_PATH = MODELS_DIR / "xgboost_with_graph_pipeline.joblib"
+
+GRAPH_RANDOM_SEED = RANDOM_SEED + 2  # separate RNG stream from transaction/login generation
+
+# Mule-ring simulation. Real device/IP/beneficiary collisions are ~never
+# organic in this synthetic data (each is independently randomized in
+# Phase 1/2), so realistic shared-infrastructure structure has to be
+# deliberately injected -- see graph_generation.py.
+N_RINGS = 25
+RING_SIZE_MIN = 3
+RING_SIZE_MAX = 7
+RING_FRAUD_MEMBER_BIAS = 0.7  # probability a ring member is drawn from the fraud-customer pool vs. a random customer
+RING_TRANSACTION_OVERRIDE_RATE = 0.4  # probability an eligible transaction's device/IP is reassigned to the ring's shared pool
+RING_BENEFICIARY_OVERRIDE_RATE = 0.5  # probability a ring member's new-beneficiary transaction points at a shared ring beneficiary
+
+# Causal lookback: graph features are built from a single chronological pass
+# over ALL transactions (the graph connects across customers, unlike Phase
+# 1/2's per-customer causal loops); see graph_features.py.
+GRAPH_NUMERIC_FEATURES = [
+    "graph_shared_device_count",
+    "graph_shared_ip_count",
+    "graph_beneficiary_connectivity",
+    "graph_suspicious_neighbor_count",
+    "graph_account_network_risk",
+]
+
+GRAPH_FEATURE_COLUMNS = GRAPH_NUMERIC_FEATURES
+
+# Transaction + cyber (Phase 1+2, unchanged) + graph telemetry.
+FEATURE_COLUMNS_WITH_GRAPH = FEATURE_COLUMNS_WITH_CYBER + GRAPH_FEATURE_COLUMNS
