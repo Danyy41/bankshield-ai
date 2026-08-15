@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Data & model artifacts (regenerate via `python scripts/run_all.py`).
+# Figures and metrics ARE versioned so the README/reports render on GitHub
+# without anyone having to run the pipeline first.
+data/raw/*.csv
+data/processed/*.csv
+models/*.joblib
+models/*.pkl
+
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!models/.gitkeep
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
