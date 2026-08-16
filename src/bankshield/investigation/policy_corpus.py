@@ -82,18 +82,32 @@ def _parse_document(raw: str) -> tuple[str, str, list[PolicyChunk]]:
     return doc_id, doc_title, chunks
 
 
-def load_policy_chunks() -> list[PolicyChunk]:
-    """Parse every .md file in config.POLICY_DOCS_DIR into section-level
-    chunks. Raises FileNotFoundError if the directory is missing/empty."""
-    if not config.POLICY_DOCS_DIR.exists():
-        raise FileNotFoundError(f"{config.POLICY_DOCS_DIR} does not exist")
+def load_policy_chunks_from(directory) -> list[PolicyChunk]:
+    """Parse every .md file in an arbitrary directory into section-level
+    chunks, using the same parsing rules as `load_policy_chunks`. Used by
+    the Phase 5 red-team suite to build an isolated retriever over
+    `security/malicious_policy_fixtures/` -- a directory deliberately kept
+    separate from `config.POLICY_DOCS_DIR` -- without ever touching the
+    production corpus. Raises FileNotFoundError if the directory is
+    missing/empty, same as `load_policy_chunks`."""
+    from pathlib import Path
 
-    doc_paths = sorted(config.POLICY_DOCS_DIR.glob("*.md"))
+    directory = Path(directory)
+    if not directory.exists():
+        raise FileNotFoundError(f"{directory} does not exist")
+
+    doc_paths = sorted(directory.glob("*.md"))
     if not doc_paths:
-        raise FileNotFoundError(f"no policy documents found in {config.POLICY_DOCS_DIR}")
+        raise FileNotFoundError(f"no policy documents found in {directory}")
 
     all_chunks: list[PolicyChunk] = []
     for path in doc_paths:
         _, _, chunks = _parse_document(path.read_text())
         all_chunks.extend(chunks)
     return all_chunks
+
+
+def load_policy_chunks() -> list[PolicyChunk]:
+    """Parse every .md file in config.POLICY_DOCS_DIR into section-level
+    chunks. Raises FileNotFoundError if the directory is missing/empty."""
+    return load_policy_chunks_from(config.POLICY_DOCS_DIR)

@@ -691,18 +691,144 @@ unmodified.
 See [`reports/phase4_architecture.md`](reports/phase4_architecture.md) for
 a fuller discussion of the design decisions above, including the tradeoffs
 deliberately deferred (a production vector DB and embeddings backend for
-RAG, a durable approval/case store instead of in-memory, and Phase 5's
-planned adversarial testing of the agent itself).
+RAG, a durable approval/case store instead of in-memory).
+
+## Phase 5 — AI Security Red Team
+
+A defensive security layer (`src/bankshield/security/`) built around the
+Phase 4 investigation agent, plus a deterministic, offline red-team suite
+that attacks it. Phase 1–4 logic is untouched except for three small,
+targeted fixes the red-teaming itself surfaced (below) — the human-approval
+gate, tool allowlist, and offline architecture are exactly as before.
+
+### Attack categories (24 cases, `security/redteam_cases.yaml`)
+
+1. **Prompt injection** — narrative claims of already-completed actions,
+   instruction-shaped API field values, injected enum values.
+2. **RAG / document poisoning** — a synthetic malicious policy document
+   (`security/malicious_policy_fixtures/`), kept structurally isolated from
+   the production corpus, tested both for accidental ingestion and for
+   whether its content — if retrieved — could authorize a consequential
+   action.
+3. **Unauthorized tool use** — tool names outside the allowlist, near-miss
+   name variants, direct (agent-loop-bypassing) tool calls.
+4. **Human approval bypass** — blank reviewer, double-decision, a forged
+   non-approved approval object handed straight to the case store.
+5. **Citation integrity** — nonexistent citations, real-but-unretrieved
+   citations, malformed citation shapes.
+6. **Sensitive-data / information leakage** — direct requests for the
+   system prompt/credentials via `search_policy`, injection-style customer
+   IDs, a simulated internal exception with sensitive-looking text.
+7. **Adversarial API inputs** — oversized IDs, malformed JSON bodies,
+   nonexistent object IDs across every lookup endpoint.
+8. **Tool argument validation / privilege escalation** — smuggled extra
+   fields, out-of-range numeric arguments.
+
+Each case is *executed*, not just declared: `security/redteam_cases.yaml`
+holds the human-readable metadata (threat, test case, expected behavior,
+mitigation); `src/bankshield/security/redteam_engine.py` has one Python
+handler per case that actually runs it against the real agent, tools, API,
+and RAG stack — offline, via `FakeLLMClient`/`AutoFakeLLMClient`, no AWS
+credentials, no live model. Where a case needs to simulate a compromised or
+jailbroken model, the script emits exactly the tool call or narrative text
+such a model would produce, and checks whether the *system* — not the
+model's judgment — still holds.
+
+### Defenses (`src/bankshield/security/`)
+
+- **`validators.py`** — a Pydantic model per tool (`extra="forbid"`,
+  bounded string lengths, enum-constrained fields like `create_case`'s
+  `disposition`), enforced server-side in `tools.execute_tool` before
+  dispatch. This is a structural allowlist/schema check, not a keyword
+  filter: it rejects anything that doesn't match the declared shape,
+  regardless of what the strings inside it say.
+- **`guardrails.py`** —
+  - `safe_execute_tool`: fail-closed containment around tool execution. An
+    unknown/disallowed tool name still raises inside `tools.py` (that
+    tested contract is untouched); this wrapper is the agent loop's
+    boundary, turning that exception into a contained error result instead
+    of crashing the investigation.
+  - `filter_citations_to_retrieved` / `retrieved_chunk_ids`: a citation is
+    only trusted if it was *actually retrieved this run* (the automatic
+    grounding search or an explicit `search_policy` call) — not merely
+    because a chunk with that ID happens to exist in the corpus. This
+    closes a real gap found during Phase 5 inspection: the original
+    `agent.py` citation check only verified existence, so a narrative could
+    cite a real-but-never-looked-up policy section and have it pass as
+    "verified."
+  - `sanitize_error_response`: backs a global FastAPI exception handler —
+    any unexpected exception becomes a fixed, generic 500 message, never
+    the original exception text (which could contain file paths or other
+    internal detail).
+- **Pre-existing, unchanged boundary**: `create_case` never creates a
+  `Case` — it only ever files a `PendingApproval`. A `Case` is constructed
+  exclusively inside `CaseStore.create_from_approval`, reachable only from
+  `ApprovalStore.decide(approved=True)`, itself only reachable from the
+  human-facing `POST /approvals/{id}/decision` endpoint. No LLM output,
+  retrieved document, or tool request can reach a `Case` directly. Phase 5
+  adds one defense-in-depth assertion (`create_from_approval` now also
+  checks `approval.status == APPROVED`) without changing this boundary.
+- **Bounded API inputs**: every request body field and path parameter that
+  identifies an object now has an explicit length bound
+  (`security.validators.MAX_ID_LEN` etc.), and `ApprovalDecisionRequest`
+  requires a non-empty `reviewer` — an approval decision with no named
+  human is not a valid request shape.
+
+### Results
+
+**24/24 synthetic attacks blocked (100%)** on the run backing
+[`reports/phase5_redteam_report.md`](reports/phase5_redteam_report.md) —
+run it yourself with `python scripts/run_redteam.py`. One real gap was
+found and fixed during this phase (the citation-retrieval-scoping issue
+above, case `CITE-02`); every other case passed against the existing
+Phase 1–4 structure without modification.
+
+```
+python scripts/run_redteam.py
+# [PASS] PI-01    prompt_injection
+# ...
+# 24/24 attacks blocked (100%)
+# Saved report to reports/phase5_redteam_report.md
+```
+
+Security regression tests (`tests/test_security_redteam.py`,
+`tests/test_security_validators_guardrails.py`) run the same 24 cases plus
+direct unit tests of `validators.py`/`guardrails.py` as part of the normal
+test suite, so a future change that reopens one of these gaps fails CI, not
+just the standalone script.
+
+### Limitations
+
+This is a **synthetic, portfolio-scope security evaluation**, not proof of
+production security:
+
+- Every prompt-injection/RAG-poisoning case runs against a deterministic,
+  scripted `FakeLLMClient` — there's no live-model evaluation here. The
+  cases test whether the *system* survives a compromised model, not
+  whether a real Claude model can be socially engineered by clever wording
+  (that needs a live Bedrock evaluation, out of scope for this
+  credential-free repo).
+- No authentication/authorization layer — `reviewer` is a free-text field,
+  not a verified identity.
+- In-memory, process-local stores (unchanged since Phase 4) — no
+  multi-instance or network-level threat modeling.
+- 24 deterministic cases target specific, previously-identified failure
+  modes; this is not exhaustive fuzzing.
+- RAG defenses are structural (retrieval provenance), not semantic — the
+  system doesn't classify document *content* as malicious, by design
+  (avoiding brittle keyword filtering); it only denies documents any
+  authority over side effects.
+
+Full write-up, per-case table, and the complete limitations discussion:
+[`reports/phase5_redteam_report.md`](reports/phase5_redteam_report.md).
 
 ## Roadmap
 
-Phase 1, 2, 3, and 4 (this repo) are the classical ML + cyber-telemetry +
-graph-intelligence foundation, plus the AI-assisted investigation layer on
-top of it. Planned next:
-
-- **Phase 5** — AI-security testing of the Phase 4 system (prompt
-  injection against the agent and its tools, attempts to bypass the
-  human-approval gate, model evasion, adversarial robustness).
+Phases 1 through 5 (this repo) are the classical ML + cyber-telemetry +
+graph-intelligence foundation, the AI-assisted investigation layer on top
+of it, and a defensive red-team evaluation of that layer. Possible next
+steps: a live-model (Bedrock) red-team run to complement the offline suite
+above, a durable approval/case store, and an authentication layer.
 
 ## License
 

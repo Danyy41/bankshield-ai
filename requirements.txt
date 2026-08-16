@@ -12,3 +12,6 @@ fastapi>=0.110
 uvicorn>=0.29
 pydantic>=2.6
 boto3>=1.34
+
+# Phase 5: AI security / red-team evaluation
+PyYAML>=6.0

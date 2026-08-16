@@ -244,3 +244,19 @@ LLM_MODE_ENV_VAR = "BANKSHIELD_LLM_MODE"
 LLM_MODE_OFFLINE = "offline"
 LLM_MODE_BEDROCK = "bedrock"
 LLM_MODE_DEFAULT = LLM_MODE_OFFLINE
+
+
+# =========================================================================
+# Phase 5: AI security / red-team evaluation
+# =========================================================================
+# Everything below is additive -- it never changes how Phase 1-4 code
+# resolves its own paths (POLICY_DOCS_DIR above is untouched).
+
+# Top-level red-team data directory (sibling to data/, scripts/, reports/):
+# the YAML case suite and any synthetic malicious document fixtures. Kept
+# structurally separate from POLICY_DOCS_DIR so a red-team fixture can never
+# be accidentally ingested into the production policy corpus.
+REDTEAM_DIR = ROOT_DIR / "security"
+REDTEAM_CASES_YAML = REDTEAM_DIR / "redteam_cases.yaml"
+MALICIOUS_POLICY_FIXTURES_DIR = REDTEAM_DIR / "malicious_policy_fixtures"
+REDTEAM_REPORT_PATH = REPORTS_DIR / "phase5_redteam_report.md"

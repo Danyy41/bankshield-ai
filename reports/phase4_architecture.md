@@ -175,15 +175,15 @@ case store with a durable, auditable store (e.g. DynamoDB, as suggested by
 `POL-CASE-004 §4`'s approval-record requirements) so the queue survives a
 restart and is queryable across instances.
 
-## What Phase 5 will test
+## What Phase 5 tested
 
-Phase 5 (not started) is AI-security/red-team testing of this system:
-prompt injection via tool results or transaction data (e.g. can a crafted
-`merchant_category` string or a policy-document-shaped injection make the
-agent claim a case was created, or bypass the citation-grounding filter),
-attempts to make the agent call `create_case` in a way that skips the
-approval gate, and adversarial inputs designed to make the model state an
-incorrect risk score or fabricate evidence. That testing is out of scope
-for Phase 4 by design — see the top-level task instructions — and the
-approval-gate and citation-filtering mechanisms above are exactly the
-surfaces Phase 5 will attempt to defeat.
+That red-teaming was out of scope for Phase 4 by design — see the
+top-level task instructions — and is now done: Phase 5 (`src/bankshield/security/`,
+`security/redteam_cases.yaml`, `scripts/run_redteam.py`) red-teamed exactly
+the surfaces described above -- prompt injection via narrative text and API
+fields, RAG/document poisoning, attempts to make `create_case` skip the
+approval gate, and citation-grounding bypass attempts -- and fixed one real
+gap it found (the citation check verified corpus existence but not
+retrieval-this-run). See
+[`reports/phase5_redteam_report.md`](phase5_redteam_report.md) and the
+README's Phase 5 section for the full results and defenses.

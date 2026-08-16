@@ -42,6 +42,7 @@ from bankshield.investigation.schemas import (
     TransactionEvidence,
     TransactionRisk,
 )
+from bankshield.security import guardrails
 
 SYSTEM_PROMPT = """\
 You are BankShield's AI investigation assistant, helping a human fraud/AML \
@@ -159,29 +160,20 @@ def _tool_results_to_converse(results: list[tuple[ToolUseBlock, dict, bool]]) ->
     return out
 
 
-def _extract_citations(narrative: str) -> list[PolicyCitation]:
+def _extract_citations(
+    narrative: str, payload: InvestigationPayload, tool_call_records: list[ToolCallRecord]
+) -> list[PolicyCitation]:
+    """Citations surfaced to the analyst are restricted to what this run
+    actually retrieved -- see security/guardrails.py:
+    filter_citations_to_retrieved. A citation to a real corpus section the
+    agent never looked up this run is treated the same as a citation to a
+    section that doesn't exist at all: dropped, not surfaced as verified.
+    """
     from bankshield.investigation.rag import get_retriever
 
     retriever = get_retriever()
-    citations = []
-    seen = set()
-    for doc_id, section in _CITATION_RE.findall(narrative):
-        key = (doc_id, section)
-        if key in seen:
-            continue
-        seen.add(key)
-        chunk = retriever.get_by_id(doc_id, section)
-        if chunk is not None:
-            citations.append(
-                PolicyCitation(
-                    doc_id=chunk.doc_id,
-                    section=chunk.section,
-                    title=f"{chunk.doc_title} — {chunk.section_title}",
-                    text=chunk.text,
-                    score=1.0,
-                )
-            )
-    return citations
+    retrieved_ids = guardrails.retrieved_chunk_ids(payload, tool_call_records)
+    return guardrails.filter_citations_to_retrieved(narrative, _CITATION_RE, retriever, retrieved_ids)
 
 
 def _estimate_cost_usd(model_id: str, input_tokens: int, output_tokens: int) -> float:
@@ -232,7 +224,11 @@ def run_investigation(
         tool_uses = response.tool_uses()
         results: list[tuple[ToolUseBlock, dict, bool]] = []
         for tool_use in tool_uses:
-            exec_result = tools.execute_tool(tool_use.name, tool_use.input)
+            # Fail-closed containment: a request for an unknown/disallowed
+            # tool name (e.g. from a hallucinated or injected tool call)
+            # must not crash the investigation -- it becomes an error tool
+            # result the loop can continue past. See security/guardrails.py.
+            exec_result = guardrails.safe_execute_tool(tool_use.name, tool_use.input)
             tool_call_records.append(exec_result.record)
             results.append((tool_use, exec_result.output, exec_result.record.is_error))
 
@@ -260,7 +256,7 @@ def run_investigation(
                 disposition = candidate
                 break
 
-    citations = _extract_citations(narrative)
+    citations = _extract_citations(narrative, payload, tool_call_records)
     latency_ms = (time.monotonic() - start) * 1000
 
     return InvestigationResult(

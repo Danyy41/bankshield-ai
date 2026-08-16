@@ -34,9 +34,10 @@ import uuid
 from functools import lru_cache
 from typing import Any
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Path, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from bankshield import config
 from bankshield.investigation import data_access
@@ -46,6 +47,8 @@ from bankshield.investigation.case_store import get_case_store
 from bankshield.investigation.llm_client import AutoFakeLLMClient, BedrockClaudeClient, LLMClient
 from bankshield.investigation.rag import search_policy
 from bankshield.investigation.schemas import Case, InvestigationResult, PendingApproval
+from bankshield.security import validators
+from bankshield.security.guardrails import sanitize_error_response
 
 app = FastAPI(
     title="BankShield AI — Investigation API",
@@ -63,6 +66,18 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Fail-closed catch-all: anything not already turned into an
+    HTTPException by a route becomes a generic 500, never the raw
+    exception message (which could contain file paths, internal
+    identifiers, or other implementation detail). See
+    security/guardrails.py:sanitize_error_response. FastAPI's own
+    HTTPException handling still takes precedence over this."""
+    return JSONResponse(status_code=500, content=sanitize_error_response(exc))
+
 
 # transaction_id -> InvestigationResult, most-recent run wins. In-memory,
 # process-local -- same tradeoff as approvals.py / case_store.py, adequate
@@ -104,8 +119,15 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def _id_path() -> Any:
+    """A fresh bounded-length Path(...) per parameter -- FastAPI's Path()
+    return value is not safe to share as a single instance across multiple
+    differently-named path parameters, so each call site gets its own."""
+    return Path(min_length=1, max_length=validators.MAX_ID_LEN)
+
+
 @app.get("/transactions/{transaction_id}")
-def get_transaction(transaction_id: str) -> dict:
+def get_transaction(transaction_id: str = _id_path()) -> dict:
     try:
         return data_access.get_transaction(transaction_id)
     except data_access.NotFoundError as exc:
@@ -113,7 +135,7 @@ def get_transaction(transaction_id: str) -> dict:
 
 
 @app.get("/transactions/{transaction_id}/risk")
-def get_risk_score(transaction_id: str) -> dict:
+def get_risk_score(transaction_id: str = _id_path()) -> dict:
     try:
         return data_access.get_risk_score(transaction_id)
     except data_access.NotFoundError as exc:
@@ -121,18 +143,19 @@ def get_risk_score(transaction_id: str) -> dict:
 
 
 @app.get("/customers/{customer_id}/auth-history")
-def get_auth_history(customer_id: str, limit: int = 20) -> dict:
+def get_auth_history(customer_id: str = _id_path(), limit: int = 20) -> dict:
     return {"customer_id": customer_id, "events": data_access.get_auth_history(customer_id, limit=limit)}
 
 
 @app.get("/customers/{customer_id}/graph-neighbors")
-def get_graph_neighbors(customer_id: str) -> dict:
+def get_graph_neighbors(customer_id: str = _id_path()) -> dict:
     return {"customer_id": customer_id, "neighbors": data_access.get_graph_neighbors(customer_id)}
 
 
 class PolicySearchRequest(BaseModel):
-    query: str
-    top_k: int = 4
+    model_config = ConfigDict(extra="forbid")
+    query: str = Field(min_length=1, max_length=validators.MAX_QUERY_LEN)
+    top_k: int = Field(default=4, ge=1, le=20)
 
 
 @app.post("/policy/search")
@@ -153,7 +176,8 @@ def get_sample_transactions(n: int = 5) -> dict:
 
 
 class InvestigationRequest(BaseModel):
-    transaction_id: str
+    model_config = ConfigDict(extra="forbid")
+    transaction_id: str = Field(min_length=1, max_length=validators.MAX_ID_LEN)
 
 
 @app.post("/investigations", response_model=InvestigationResult)
@@ -169,7 +193,7 @@ def post_investigation(
 
 
 @app.get("/investigations/{transaction_id}", response_model=InvestigationResult)
-def get_investigation(transaction_id: str) -> InvestigationResult:
+def get_investigation(transaction_id: str = _id_path()) -> InvestigationResult:
     result = _investigation_results.get(transaction_id)
     if result is None:
         raise HTTPException(
@@ -185,13 +209,17 @@ def list_approvals() -> list[PendingApproval]:
 
 
 class ApprovalDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     approved: bool
-    reviewer: str
-    notes: str | None = None
+    # A human approval decision must name an accountable reviewer -- this
+    # is the one HTTP-layer field enforcing that human-in-the-loop
+    # identity, so it's non-empty by schema, not by convention.
+    reviewer: str = Field(min_length=1, max_length=validators.MAX_REVIEWER_LEN)
+    notes: str | None = Field(default=None, max_length=validators.MAX_NOTES_LEN)
 
 
 @app.post("/approvals/{approval_id}/decision", response_model=PendingApproval)
-def decide_approval(approval_id: str, request: ApprovalDecisionRequest) -> PendingApproval:
+def decide_approval(request: ApprovalDecisionRequest, approval_id: str = _id_path()) -> PendingApproval:
     try:
         return get_approval_store().decide(
             approval_id, approved=request.approved, reviewer=request.reviewer, notes=request.notes
@@ -208,7 +236,7 @@ def list_cases() -> list[Case]:
 
 
 @app.get("/cases/{case_id}", response_model=Case)
-def get_case(case_id: str) -> Case:
+def get_case(case_id: str = _id_path()) -> Case:
     case = get_case_store().get(case_id)
     if case is None:
         raise HTTPException(status_code=404, detail=f"no case with id {case_id!r}")

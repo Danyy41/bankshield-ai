@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from bankshield.investigation.schemas import Case, PendingApproval
+from bankshield.investigation.schemas import ApprovalStatus, Case, PendingApproval
 
 
 @dataclass
@@ -20,6 +20,15 @@ class CaseStore:
     _cases: dict[str, Case] = field(default_factory=dict)
 
     def create_from_approval(self, approval: PendingApproval) -> Case:
+        # Defense in depth: every caller in this codebase only reaches here
+        # via ApprovalStore.decide(approved=True) (see approvals.py), which
+        # already guarantees this -- but a case must never be creatable
+        # from an approval that isn't actually approved, so the invariant
+        # is asserted here too rather than trusted from the call site.
+        if approval.status != ApprovalStatus.APPROVED:
+            raise ValueError(
+                f"refusing to create a case from a non-approved approval (status={approval.status!r})"
+            )
         proposed = approval.proposed_input
         case = Case(
             case_id=f"case_{uuid.uuid4().hex[:12]}",

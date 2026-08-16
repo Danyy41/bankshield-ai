@@ -22,6 +22,7 @@ from bankshield.investigation.approvals import get_approval_store
 from bankshield.investigation.case_store import get_case_store
 from bankshield.investigation.rag import search_policy as _search_policy
 from bankshield.investigation.schemas import ToolCallRecord
+from bankshield.security.validators import ToolInputValidationError, validate_tool_input
 
 CONSEQUENTIAL_TOOLS = {"create_case"}
 
@@ -218,9 +219,19 @@ def execute_tool(name: str, input: dict[str, Any]) -> ToolExecutionResult:
 
     start = time.monotonic()
     try:
-        output = _DISPATCH[name](input)
+        # Enforce each tool's declared schema server-side before dispatch --
+        # extra/unexpected arguments, wrong types, and out-of-enum values
+        # (e.g. an unauthorized `disposition`) are rejected here rather than
+        # trusting the caller (a real or compromised model) to have complied
+        # with the schema it was shown. See security/validators.py.
+        validated_input = validate_tool_input(name, input)
+        output = _DISPATCH[name](validated_input)
         is_error = False
         summary = f"ok ({len(str(output))} chars)"
+    except ToolInputValidationError as exc:
+        output = {"error": str(exc)}
+        is_error = True
+        summary = f"error: {exc}"
     except (data_access.NotFoundError, KeyError, ValueError) as exc:
         output = {"error": str(exc)}
         is_error = True
