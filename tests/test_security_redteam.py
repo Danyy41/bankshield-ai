@@ -17,7 +17,7 @@ from bankshield.security.redteam_engine import run_case
 
 
 def _load_case_ids() -> list[str]:
-    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text())
+    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text(encoding="utf-8"))
     return [case["attack_id"] for case in raw["cases"]]
 
 
@@ -25,7 +25,7 @@ CASE_IDS = _load_case_ids()
 
 
 def test_redteam_yaml_declares_all_eight_categories():
-    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text())
+    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text(encoding="utf-8"))
     categories = {case["category"] for case in raw["cases"]}
     assert categories == {
         "prompt_injection",
@@ -40,7 +40,7 @@ def test_redteam_yaml_declares_all_eight_categories():
 
 
 def test_redteam_yaml_cases_have_required_fields():
-    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text())
+    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text(encoding="utf-8"))
     required = {"attack_id", "category", "description", "malicious_input", "expected_security_behavior"}
     for case in raw["cases"]:
         assert required <= case.keys(), case.get("attack_id")

@@ -42,7 +42,10 @@ CATEGORY_LABELS = {
 
 
 def load_cases() -> list[dict]:
-    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text())
+    # Explicit encoding -- the YAML contains "§"/em-dash characters; see the
+    # matching fix in policy_corpus.py for why this must not rely on the
+    # platform-default encoding (wrong on Windows more often than not).
+    raw = yaml.safe_load(config.REDTEAM_CASES_YAML.read_text(encoding="utf-8"))
     return raw["cases"]
 
 
@@ -234,7 +237,7 @@ def main() -> None:
 
     report = build_report(results)
     config.REDTEAM_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    config.REDTEAM_REPORT_PATH.write_text(report)
+    config.REDTEAM_REPORT_PATH.write_text(report, encoding="utf-8")
     print(f"\nSaved report to {config.REDTEAM_REPORT_PATH}")
 
     failing = [c for c, r in results if not r.passed]

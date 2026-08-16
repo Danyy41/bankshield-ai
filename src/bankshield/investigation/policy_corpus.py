@@ -102,7 +102,14 @@ def load_policy_chunks_from(directory) -> list[PolicyChunk]:
 
     all_chunks: list[PolicyChunk] = []
     for path in doc_paths:
-        _, _, chunks = _parse_document(path.read_text())
+        # Explicit encoding, not the platform default: these documents are
+        # UTF-8 (they use "§" and em dashes). Path.read_text() with no
+        # encoding= falls back to locale.getpreferredencoding(), which is
+        # UTF-8 on Linux/Mac but frequently cp1252 on Windows -- under
+        # cp1252 the "§" byte sequence is misdecoded, _SECTION_RE stops
+        # matching entirely, and every document parses to zero chunks
+        # (silently, no exception) rather than raising here.
+        _, _, chunks = _parse_document(path.read_text(encoding="utf-8"))
         all_chunks.extend(chunks)
     return all_chunks
 

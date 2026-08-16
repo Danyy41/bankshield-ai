@@ -2,8 +2,44 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from bankshield.investigation.policy_corpus import load_policy_chunks
 from bankshield.investigation.rag import PolicyRetriever, get_retriever, search_policy
+
+
+def test_load_policy_chunks_is_immune_to_platform_default_encoding(monkeypatch):
+    """Regression guard (Phase 5 verification fix): policy docs contain
+    "§", whose UTF-8 bytes are misdecoded under cp1252 -- the codepage
+    Path.read_text() silently falls back to on many Windows machines when
+    no encoding= is given, which previously made every document parse to
+    zero chunks with no exception raised (PolicyRetriever then raised
+    "requires at least one chunk"). This patches Path.read_text itself
+    (the exact call policy_corpus.py makes) to force that ambient
+    cp1252 fallback whenever a caller omits encoding=, and asserts chunk
+    loading is unaffected -- proving policy_corpus.py always passes
+    encoding="utf-8" explicitly rather than relying on the platform
+    default. Reverting that fix makes this test fail with zero chunks."""
+    real_read_text = Path.read_text
+
+    def read_text_forcing_cp1252_when_unspecified(self, encoding=None, errors=None):
+        if encoding is None:
+            encoding = "cp1252"
+        return real_read_text(self, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", read_text_forcing_cp1252_when_unspecified)
+
+    chunks = load_policy_chunks()
+    assert len(chunks) > 0
+    doc_ids = {c.doc_id for c in chunks}
+    assert doc_ids == {
+        "POL-AML-001",
+        "POL-FRAUD-002",
+        "POL-ATO-003",
+        "POL-CASE-004",
+        "POL-GRAPH-006",
+        "POL-KYC-005",
+    }
 
 
 def test_load_policy_chunks_parses_all_documents():

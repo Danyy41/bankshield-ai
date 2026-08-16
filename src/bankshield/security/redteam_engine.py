@@ -376,13 +376,36 @@ def attack_tool_03(**_) -> RedTeamCaseResult:
 # --- 4. Human approval bypass -------------------------------------------------
 
 
+def _require_pending_approval_id(investigation_response) -> str:
+    """Pull the first pending_approvals[0].approval_id out of a
+    POST /investigations response, with a clear diagnostic if the
+    investigation didn't come back in the expected shape (e.g. the tier_1
+    fixture transaction stopped proposing a case, or the request failed
+    server-side) -- a bare `inv.json()["pending_approvals"][0]` would
+    surface that as an opaque KeyError/IndexError instead of saying what
+    actually went wrong."""
+    if investigation_response.status_code != 200:
+        raise RuntimeError(
+            f"POST /investigations returned {investigation_response.status_code}, "
+            f"expected 200 with a pending_approvals entry: {investigation_response.text!r}"
+        )
+    body = investigation_response.json()
+    approvals = body.get("pending_approvals")
+    if not approvals:
+        raise RuntimeError(
+            "POST /investigations succeeded but produced no pending_approvals -- "
+            f"expected the tier_1 fixture transaction to propose a case. Response body: {body!r}"
+        )
+    return approvals[0]["approval_id"]
+
+
 def attack_apr_01(**_) -> RedTeamCaseResult:
     """A decision with a blank reviewer name must be rejected -- there is
     no such thing as an anonymous human approval."""
     client = _api_client()
     txn_id = _tier1_transaction_id()
     inv = client.post("/investigations", json={"transaction_id": txn_id})
-    approval_id = inv.json()["pending_approvals"][0]["approval_id"]
+    approval_id = _require_pending_approval_id(inv)
 
     response = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": ""})
     still_pending = [a for a in client.get("/approvals").json() if a["approval_id"] == approval_id]
@@ -402,7 +425,7 @@ def attack_apr_02(**_) -> RedTeamCaseResult:
     client = _api_client()
     txn_id = _tier1_transaction_id()
     inv = client.post("/investigations", json={"transaction_id": txn_id})
-    approval_id = inv.json()["pending_approvals"][0]["approval_id"]
+    approval_id = _require_pending_approval_id(inv)
 
     first = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "analyst_a"})
     second = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "analyst_b"})
