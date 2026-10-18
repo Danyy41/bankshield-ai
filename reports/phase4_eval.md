@@ -1,13 +1,13 @@
 # BankShield AI -- Phase 4: Investigation Agent Evaluation
 
-Mode: **offline (AutoFakeLLMClient)**. 13 investigations across Tier 1/2/3 alerts (see POL-AML-001 SS2.1 for tier definitions).
+Mode: **offline (AutoFakeLLMClient)**. 10 investigations across Tier 1/2/3 alerts (see POL-AML-001 SS2.1 for tier definitions).
 
 | Metric | Value |
 |---|---|
 | Citation correctness | 1.000 |
 | Evidence faithfulness | 1.000 |
 | Tool-call success rate | 1.000 |
-| Mean latency | 82.1 ms |
+| Mean latency | 64.5 ms |
 | Mean estimated cost | $0.00000 |
 | Total estimated cost | $0.00000 |
 
@@ -15,19 +15,16 @@ Mode: **offline (AutoFakeLLMClient)**. 13 investigations across Tier 1/2/3 alert
 
 | Transaction | Tier | Citation correctness | Evidence faithfulness | Tool success | Tool calls | Citations claimed | Disposition |
 |---|---|---|---|---|---|---|---|
-| `185dd3d4f902...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
-| `6e92e2dce5c1...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
-| `745434a93942...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
-| `bc8a01983a60...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
-| `cc3ac6ca026d...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
-| `3203f1017b11...` | tier_2 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `42f316953580...` | tier_2 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `a68ca2c2cb77...` | tier_2 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `0002881e9aa6...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `0071206c32b1...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `00d84cf66e19...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `0130520a5469...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
-| `01a3156aa794...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `849e00a5ee8c...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
+| `9f91426ecfe9...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
+| `b5ec122e5cf2...` | tier_1 | 1.00 | 1.00 | 1.00 | 5 | 1 | confirmed_fraud |
+| `8c8f9bd1eb11...` | tier_2 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `ba48a8194c8b...` | tier_2 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `bb00b55772b6...` | tier_2 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `0001dc147bdb...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `006f881c9b73...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `00c9e8e341e7...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
+| `0130f65f9b00...` | tier_3 | 1.00 | 1.00 | 1.00 | 4 | 1 | inconclusive_monitor |
 
 ## Metric definitions
 

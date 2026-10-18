@@ -31,18 +31,22 @@ columns Phase 1/2 rely on are untouched.
 
 from __future__ import annotations
 
-import uuid
-
 import numpy as np
 import pandas as pd
 from faker import Faker
 
 from bankshield import config
+from bankshield.ids import SeededIdFactory
 
 BENEFICIARY_CATEGORIES = ("wire_transfer", "cash_withdrawal")
 
 
-def _reconstruct_beneficiary_ids(transactions_df: pd.DataFrame, rng: np.random.Generator) -> pd.Series:
+def _reconstruct_beneficiary_ids(
+    transactions_df: pd.DataFrame,
+    rng: np.random.Generator,
+    ids: SeededIdFactory | None = None,
+) -> pd.Series:
+    ids = ids or SeededIdFactory(config.GRAPH_RANDOM_SEED)
     beneficiary_id = pd.Series([None] * len(transactions_df), index=transactions_df.index, dtype=object)
 
     eligible_mask = transactions_df["merchant_category"].isin(BENEFICIARY_CATEGORIES)
@@ -52,7 +56,7 @@ def _reconstruct_beneficiary_ids(transactions_df: pd.DataFrame, rng: np.random.G
         known: list[str] = []
         for idx, is_new in zip(group.index, group["new_beneficiary"]):
             if is_new or not known:
-                new_id = f"benef_{uuid.uuid4().hex[:10]}"
+                new_id = f"benef_{ids.hex()[:10]}"
                 known.append(new_id)
                 beneficiary_id.at[idx] = new_id
             else:
@@ -68,6 +72,7 @@ def _inject_mule_rings(
     graph_ip_address: pd.Series,
     rng: np.random.Generator,
     faker: Faker,
+    ids: SeededIdFactory,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     fraud_customers = transactions_df.loc[transactions_df["is_fraud"] == 1, "customer_id"].unique()
     all_customers = transactions_df["customer_id"].unique()
@@ -84,9 +89,9 @@ def _inject_mule_rings(
             else:
                 members.add(rng.choice(all_customers))
 
-        shared_devices = [f"dev_ring_{uuid.uuid4().hex[:8]}" for _ in range(int(rng.integers(2, 4)))]
+        shared_devices = [f"dev_ring_{ids.hex()[:8]}" for _ in range(int(rng.integers(2, 4)))]
         shared_ips = [faker.ipv4_public() for _ in range(int(rng.integers(2, 4)))]
-        shared_beneficiaries = [f"benef_ring_{uuid.uuid4().hex[:8]}" for _ in range(int(rng.integers(1, 3)))]
+        shared_beneficiaries = [f"benef_ring_{ids.hex()[:8]}" for _ in range(int(rng.integers(1, 3)))]
         ring_name = f"ring_{ring_num:03d}"
 
         # Iterate in a fixed order, not the set's native order: Python
@@ -126,13 +131,14 @@ def generate_graph_relationships(
     rng = np.random.default_rng(seed)
     faker = Faker()
     Faker.seed(seed)
+    ids = SeededIdFactory(seed)
 
-    beneficiary_id = _reconstruct_beneficiary_ids(transactions_df, rng)
+    beneficiary_id = _reconstruct_beneficiary_ids(transactions_df, rng, ids)
     graph_device_id = transactions_df["device_id"].copy()
     graph_ip_address = transactions_df["ip_address"].copy()
 
     beneficiary_id, graph_device_id, graph_ip_address, ring_id, is_ring_member = _inject_mule_rings(
-        transactions_df, beneficiary_id, graph_device_id, graph_ip_address, rng, faker
+        transactions_df, beneficiary_id, graph_device_id, graph_ip_address, rng, faker, ids
     )
 
     return pd.DataFrame(
