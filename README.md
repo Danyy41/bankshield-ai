@@ -1,5 +1,7 @@
 # BankShield AI
 
+[![Tests](https://github.com/Danyy41/bankshield-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/Danyy41/bankshield-ai/actions/workflows/tests.yml)
+
 BankShield AI is a portfolio project demonstrating production-style AI engineering
 across financial crime detection, cybersecurity, and applied ML. It is being built
 in phases, each one a complete, working slice rather than a stub.
@@ -821,6 +823,17 @@ production security:
 
 Full write-up, per-case table, and the complete limitations discussion:
 [`reports/phase5_redteam_report.md`](reports/phase5_redteam_report.md).
+
+## Continuous integration
+
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every
+push and pull request (Python 3.11, pip-cached): it runs
+`python scripts/run_all.py` to regenerate the gitignored data and models
+the tests depend on, then the full `pytest` suite, then
+`python scripts/run_redteam.py`, which exits non-zero if any red-team
+attack is not blocked. Everything runs offline — no AWS credentials. The
+JUnit results, regenerated reports/metrics, and the resolved dependency
+versions (`pip-freeze.txt`) are uploaded as a build artifact.
 
 ## Roadmap
 
