@@ -38,6 +38,8 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+from bankshield.reproducibility import with_environment
+
 
 def evaluate_predictions(y_true, y_pred, y_proba) -> dict:
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
@@ -73,7 +75,7 @@ def print_report(model_name: str, metrics: dict) -> None:
 def save_metrics(metrics: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        json.dump(metrics, f, indent=2)
+        json.dump(with_environment(metrics), f, indent=2)
 
 
 def plot_confusion_matrix(metrics: dict, out_path: Path, title: str) -> None:

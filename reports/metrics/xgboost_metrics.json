@@ -13,5 +13,17 @@
     "tp": 30
   },
   "fraud_prevalence": 0.0138,
-  "n_test_samples": 10000
+  "n_test_samples": 10000,
+  "environment": {
+    "python": "3.11.17",
+    "platform": "Linux-x86_64",
+    "packages": {
+      "numpy": "2.4.6",
+      "pandas": "3.0.6",
+      "scikit-learn": "1.9.1",
+      "scipy": "1.17.1",
+      "xgboost": "3.2.0",
+      "Faker": "40.43.0"
+    }
+  }
 }

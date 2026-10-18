@@ -24,6 +24,7 @@ from bankshield import config
 from bankshield.investigation.agent import AgentRunConfig
 from bankshield.investigation.evaluation import run_evaluation, select_golden_set
 from bankshield.investigation.llm_client import AutoFakeLLMClient, BedrockClaudeClient
+from bankshield.reproducibility import with_environment
 
 
 def main() -> None:
@@ -56,7 +57,7 @@ def main() -> None:
         "rows": [vars(r) for r in report.rows],
     }
     metrics_path = config.METRICS_DIR / "phase4_eval_metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2))
+    metrics_path.write_text(json.dumps(with_environment(metrics), indent=2))
     print(f"Saved metrics to {metrics_path}")
 
     lines = [

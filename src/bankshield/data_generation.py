@@ -25,13 +25,12 @@ Design principles
 
 from __future__ import annotations
 
-import uuid
-
 import numpy as np
 import pandas as pd
 from faker import Faker
 
 from bankshield import config
+from bankshield.ids import SeededIdFactory
 
 
 def _calibrate_intercept(base_logit: np.ndarray, target_rate: float) -> float:
@@ -134,6 +133,7 @@ def generate_transactions(
     rng = np.random.default_rng(seed)
     faker = Faker()
     Faker.seed(seed)
+    ids = SeededIdFactory(seed)
 
     sim_start = pd.Timestamp("2026-01-01")
     sim_end = sim_start + pd.Timedelta(days=simulation_days)
@@ -153,7 +153,7 @@ def generate_transactions(
     # Each customer starts the simulation with exactly one known device
     # (their existing phone/laptop) so day-one transactions aren't all
     # flagged as a new device.
-    primary_device = [f"dev_{uuid.uuid4().hex[:10]}" for _ in range(n_customers)]
+    primary_device = [f"dev_{ids.hex()[:10]}" for _ in range(n_customers)]
 
     txn_counts = _split_transaction_counts(n_customers, n_transactions, rng)
 
@@ -196,10 +196,10 @@ def generate_transactions(
 
             # --- device: baseline 3.5% chance of a never-seen-before device ---
             if known_devices and rng.random() > 0.035:
-                device_id = rng.choice(list(known_devices))
+                device_id = rng.choice(sorted(known_devices))
                 new_device = False
             else:
-                device_id = f"dev_{uuid.uuid4().hex[:10]}"
+                device_id = f"dev_{ids.hex()[:10]}"
                 new_device = device_id not in known_devices
             known_devices.add(device_id)
 
@@ -214,10 +214,10 @@ def generate_transactions(
             # --- beneficiary: only meaningful for transfer-like categories ---
             if category in ("wire_transfer", "cash_withdrawal"):
                 if known_beneficiaries and rng.random() > 0.25:
-                    beneficiary = rng.choice(list(known_beneficiaries))
+                    beneficiary = rng.choice(sorted(known_beneficiaries))
                     new_beneficiary = False
                 else:
-                    beneficiary = f"benef_{uuid.uuid4().hex[:8]}"
+                    beneficiary = f"benef_{ids.hex()[:8]}"
                     new_beneficiary = True
                 known_beneficiaries.add(beneficiary)
             else:
@@ -242,7 +242,7 @@ def generate_transactions(
 
             rows.append(
                 {
-                    "transaction_id": uuid.uuid4().hex,
+                    "transaction_id": ids.hex(),
                     "customer_id": cust_id,
                     "timestamp": ts,
                     "amount": amount,

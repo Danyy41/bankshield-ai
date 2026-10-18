@@ -33,13 +33,12 @@ for a model to find, not leakage.
 
 from __future__ import annotations
 
-import uuid
-
 import numpy as np
 import pandas as pd
 from faker import Faker
 
 from bankshield import config
+from bankshield.ids import SeededIdFactory
 
 
 def _sample_session_duration(rng: np.random.Generator) -> float:
@@ -54,6 +53,7 @@ def generate_login_events(
     rng = np.random.default_rng(seed)
     faker = Faker()
     Faker.seed(seed)
+    ids = SeededIdFactory(seed)
 
     global_start = transactions_df["timestamp"].min()
     global_end = transactions_df["timestamp"].max()
@@ -82,7 +82,7 @@ def generate_login_events(
         anchors.sort(key=lambda a: a[0])
 
         # Each customer starts with one familiar login device (their phone/laptop).
-        known_devices = {f"dev_{uuid.uuid4().hex[:10]}"}
+        known_devices = {f"dev_{ids.hex()[:10]}"}
 
         for anchor_ts, kind, is_fraud in anchors:
             if kind == "transaction" and is_fraud:
@@ -90,19 +90,19 @@ def generate_login_events(
             else:
                 is_ato = rng.random() < config.ATO_FALSE_ALARM_RATE
 
-            session_id = uuid.uuid4().hex
+            session_id = ids.hex()
 
             if is_ato:
                 n_failed = int(rng.integers(2, 7))
                 t = anchor_ts - pd.Timedelta(seconds=rng.uniform(60, 600))
                 for _ in range(n_failed):
-                    attacker_device = f"dev_{uuid.uuid4().hex[:10]}"
+                    attacker_device = f"dev_{ids.hex()[:10]}"
                     attacker_country = rng.choice(
                         [c for c in config.FOREIGN_COUNTRIES if c != home_country]
                     )
                     rows.append(
                         {
-                            "login_id": uuid.uuid4().hex,
+                            "login_id": ids.hex(),
                             "session_id": session_id,
                             "customer_id": customer_id,
                             "timestamp": t,
@@ -120,7 +120,7 @@ def generate_login_events(
 
                 # Final successful login: usually a new device, often a new location.
                 success_device = (
-                    f"dev_{uuid.uuid4().hex[:10]}" if rng.random() < 0.90 else rng.choice(list(known_devices))
+                    f"dev_{ids.hex()[:10]}" if rng.random() < 0.90 else rng.choice(sorted(known_devices))
                 )
                 success_country = (
                     rng.choice([c for c in config.FOREIGN_COUNTRIES if c != home_country])
@@ -129,7 +129,7 @@ def generate_login_events(
                 )
                 rows.append(
                     {
-                        "login_id": uuid.uuid4().hex,
+                        "login_id": ids.hex(),
                         "session_id": session_id,
                         "customer_id": customer_id,
                         "timestamp": anchor_ts,
@@ -150,10 +150,10 @@ def generate_login_events(
                 # Occasionally a single mistyped-password retry before success.
                 if rng.random() < 0.05:
                     t = t - pd.Timedelta(seconds=rng.uniform(5, 30))
-                    same_device = rng.choice(list(known_devices))
+                    same_device = rng.choice(sorted(known_devices))
                     rows.append(
                         {
-                            "login_id": uuid.uuid4().hex,
+                            "login_id": ids.hex(),
                             "session_id": session_id,
                             "customer_id": customer_id,
                             "timestamp": t,
@@ -169,7 +169,7 @@ def generate_login_events(
                     )
 
                 device = (
-                    f"dev_{uuid.uuid4().hex[:10]}" if rng.random() < 0.03 else rng.choice(list(known_devices))
+                    f"dev_{ids.hex()[:10]}" if rng.random() < 0.03 else rng.choice(sorted(known_devices))
                 )
                 country = (
                     rng.choice([c for c in config.FOREIGN_COUNTRIES if c != home_country])
@@ -178,7 +178,7 @@ def generate_login_events(
                 )
                 rows.append(
                     {
-                        "login_id": uuid.uuid4().hex,
+                        "login_id": ids.hex(),
                         "session_id": session_id,
                         "customer_id": customer_id,
                         "timestamp": anchor_ts,

@@ -69,8 +69,8 @@ leakage could otherwise be introduced.
 ### Pipeline
 
 ```
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt    # includes fastapi/uvicorn/pydantic/boto3 for Phase 4
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -c requirements-lock.txt   # pinned; includes fastapi/uvicorn/pydantic/boto3 for Phase 4
 
 python scripts/run_all.py          # runs the full Phase 1 + 2 + 3 + 4 pipeline (steps 1-13)
 uvicorn bankshield.api.app:app --reload --app-dir src   # serve the Phase 4 API locally
@@ -90,7 +90,7 @@ Or step by step (Phase 1; see [Phase 2](#phase-2-cyber-authentication-telemetry)
 Run the test suite (data-generation and split sanity checks) with:
 
 ```
-pip install -r requirements-dev.txt
+pip install -r requirements-dev.txt -c requirements-lock.txt
 pytest tests/
 ```
 
@@ -653,14 +653,16 @@ reports:
 
 Offline mode (default, `AutoFakeLLMClient`, no AWS credentials) is what
 runs in CI and via `run_all.py`; pass `--live` to evaluate the real Bedrock
-backend instead. Current offline numbers (13 investigations, 4–5 per tier):
+backend instead. Current offline numbers (10 investigations: 3 Tier 1,
+3 Tier 2, 4 Tier 3 — the harness takes up to 4 per tier from a fixed
+600-transaction candidate sample, and Tier 1/2 alerts are rare in it):
 
 | Metric | Value |
 |---|---|
 | Citation correctness | 1.000 |
 | Evidence faithfulness | 1.000 |
 | Tool-call success rate | 1.000 |
-| Mean latency | ~80 ms |
+| Mean latency | ~65 ms |
 
 These numbers describe the scripted offline agent's self-consistency (it
 always cites what it just retrieved and states the score it just looked
@@ -831,9 +833,39 @@ push and pull request (Python 3.11, pip-cached): it runs
 `python scripts/run_all.py` to regenerate the gitignored data and models
 the tests depend on, then the full `pytest` suite, then
 `python scripts/run_redteam.py`, which exits non-zero if any red-team
-attack is not blocked. Everything runs offline — no AWS credentials. The
-JUnit results, regenerated reports/metrics, and the resolved dependency
-versions (`pip-freeze.txt`) are uploaded as a build artifact.
+attack is not blocked, then `python scripts/check_reproducibility.py`
+(see below). Dependencies are installed from `requirements-lock.txt`.
+Everything runs offline — no AWS credentials. The JUnit results,
+regenerated reports/metrics, and the resolved dependency versions
+(`pip-freeze.txt`) are uploaded as a build artifact.
+
+## Reproducibility
+
+The pipeline is deterministic end to end: on the pinned stack, every
+generated CSV and every committed metric is byte-identical from run to run
+and across processes (only Phase 4 wall-clock latency varies).
+
+- **Pinned dependencies.** `requirements.txt` pins direct dependencies
+  exactly; `requirements-lock.txt` pins the full transitive set for the
+  reference environment (Python 3.11, Linux x86_64 — what CI uses). Install
+  with `pip install -r requirements-dev.txt -c requirements-lock.txt`.
+  Model metrics *do* move across library versions (e.g. a newer XGBoost
+  builds slightly different trees), which is why the stack is pinned.
+- **Seeded IDs.** All generated IDs (transactions, logins, sessions,
+  devices, beneficiaries) come from a seeded factory
+  (`src/bankshield/ids.py`) instead of `uuid.uuid4()`, and random picks from
+  sets go through `sorted()` so they don't depend on per-process string
+  hashing. Runtime case/approval IDs stay truly random on purpose.
+- **Recorded environment.** Every `reports/metrics/*.json` carries an
+  `environment` block (Python version, platform, and the versions of
+  numpy, pandas, scikit-learn, scipy, xgboost, and Faker) so each committed
+  number is traceable to the stack that produced it.
+- **Checked in CI.** `scripts/check_reproducibility.py` compares the
+  regenerated metrics against the committed ones (ignoring the
+  `environment` block and latency) and fails on any difference — so a code
+  or dependency change can't silently move the numbers. After an
+  intentional change, rerun `python scripts/run_all.py` and commit the
+  regenerated `reports/`.
 
 ## Roadmap
 
