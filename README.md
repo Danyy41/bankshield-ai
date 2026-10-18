@@ -826,6 +826,51 @@ production security:
 Full write-up, per-case table, and the complete limitations discussion:
 [`reports/phase5_redteam_report.md`](reports/phase5_redteam_report.md).
 
+## Docker
+
+The [`Dockerfile`](Dockerfile) packages the Phase 4 API
+(`bankshield.api.app:app`) as a self-contained image:
+
+- **Reproducible artifacts.** A builder stage installs the pinned stack
+  (`requirements.txt` + `requirements-lock.txt`) and runs the seeded
+  Phase 1–3 pipeline steps the API needs; the runtime stage copies in only
+  their outputs (graph-enriched transactions, login events, graph
+  entities, the XGBoost+graph model) plus the policy corpus. The pipeline is
+  deterministic, so every build serves the same data and model as the
+  committed reports. The build fails if those artifacts can't be loaded
+  and scored.
+- **Offline by default.** `BANKSHIELD_LLM_MODE=offline` (the scripted
+  `AutoFakeLLMClient`) — no AWS credentials needed. Set
+  `-e BANKSHIELD_LLM_MODE=bedrock` plus AWS credentials to use the real
+  model.
+- **Hardened.** Python 3.11 slim base pinned by digest, non-root user
+  (uid 10001), no build tools in the runtime image, and it runs under a
+  read-only root filesystem with all capabilities dropped. A `HEALTHCHECK`
+  polls `GET /health`.
+- **Single worker, by design.** Approvals and cases live in process
+  memory, so the image runs one uvicorn worker — the human-approval gate
+  needs the approval and its decision to reach the same process. Scale with
+  more containers only once there is a shared approval/case store.
+
+```
+docker build -t bankshield-ai .
+docker run --rm -p 8000:8000 \
+  --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+  bankshield-ai
+
+curl http://localhost:8000/health                      # {"status":"ok"}
+python scripts/smoke_test_api.py http://localhost:8000  # end-to-end check, incl. the approval gate
+```
+
+`docker ps` shows the container as `healthy` once the health check
+passes. Behind a TLS-intercepting proxy, give pip its CA bundle as a build
+secret (it is never stored in an image layer):
+`docker build --secret id=pip_cert,src=/path/to/ca-bundle.crt -t bankshield-ai .`
+
+The image holds synthetic data only. CORS is open (`*`) and there is no
+authentication layer yet (see Roadmap), so don't expose it publicly as-is
+with real data.
+
 ## Continuous integration
 
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every
@@ -835,6 +880,9 @@ the tests depend on, then the full `pytest` suite, then
 `python scripts/run_redteam.py`, which exits non-zero if any red-team
 attack is not blocked, then `python scripts/check_reproducibility.py`
 (see below). Dependencies are installed from `requirements-lock.txt`.
+A parallel `docker` job builds the image, starts it with a read-only root
+filesystem and no capabilities, waits for its health check, and runs
+`scripts/smoke_test_api.py` against it.
 Everything runs offline — no AWS credentials. The JUnit results,
 regenerated reports/metrics, and the resolved dependency versions
 (`pip-freeze.txt`) are uploaded as a build artifact.

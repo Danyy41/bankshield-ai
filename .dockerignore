@@ -1,0 +1,43 @@
+# Keep the build context small and free of local state. The image
+# regenerates its data and model from the seeded pipeline, so local
+# artifacts are never copied in.
+.git/
+.github/
+.gitignore
+.dockerignore
+Dockerfile
+
+# Python / tooling
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+pytest-results.xml
+pip-freeze.txt
+
+# Generated data and models (rebuilt inside the image)
+data/raw/*.csv
+data/processed/*.csv
+models/*.joblib
+models/*.pkl
+
+# Not needed at build or run time
+reports/
+tests/
+security/
+frontend/
+*.md
+!data/policy_docs/*.md
+
+# Editors / OS / secrets
+.vscode/
+.idea/
+.DS_Store
+.env
+.env.*
+*.pem
+*.crt
