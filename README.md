@@ -6,7 +6,7 @@ BankShield AI is a portfolio project demonstrating production-style AI engineeri
 across financial crime detection, cybersecurity, and applied ML. It is being built
 in phases, each one a complete, working slice rather than a stub.
 
-**This repository currently implements Phase 1, Phase 2, Phase 3, and Phase 4.**
+**This repository implements Phases 1–5, plus CI, reproducible builds, Docker, an MCP server, A2A agents, and authentication with durable state.**
 
 ## Phase 1: fraud-detection ML baseline
 
@@ -527,15 +527,21 @@ few valid, real ones to get started against a freshly deployed instance —
 by default a demo-friendly mix spread across risk tiers (up to 2 tier_1, 2
 tier_2, 1 tier_3), not just whatever sorts first:
 
+Every endpoint except `/health` needs a bearer token (see
+[Security](#security-authentication-authorization-and-durable-state)):
+
 ```
-curl http://localhost:8000/demo/sample-transactions
+TOKEN=$(curl -s -X POST http://localhost:8000/auth/token \
+  -d username=alice.analyst -d password='<password>' | jq -r .access_token)
+
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/demo/sample-transactions
 # {"transactions": [
 #   {"transaction_id": "...", "risk_score": 0.986, "risk_tier": "tier_1"},
 #   {"transaction_id": "...", "risk_score": 0.005, "risk_tier": "tier_3"},
 #   ...
 # ]}
 
-curl http://localhost:8000/investigations \
+curl http://localhost:8000/investigations -H "Authorization: Bearer $TOKEN" \
   -X POST -H 'content-type: application/json' \
   -d '{"transaction_id": "<one of the ids above>"}'
 ```
@@ -695,7 +701,9 @@ unmodified.
 See [`reports/phase4_architecture.md`](reports/phase4_architecture.md) for
 a fuller discussion of the design decisions above, including the tradeoffs
 deliberately deferred (a production vector DB and embeddings backend for
-RAG, a durable approval/case store instead of in-memory).
+RAG, a durable approval/case store instead of in-memory — the latter
+since delivered, see
+[Security](#security-authentication-authorization-and-durable-state)).
 
 ## Phase 5 — AI Security Red Team
 
@@ -775,8 +783,9 @@ model's judgment — still holds.
 - **Bounded API inputs**: every request body field and path parameter that
   identifies an object now has an explicit length bound
   (`security.validators.MAX_ID_LEN` etc.), and `ApprovalDecisionRequest`
-  requires a non-empty `reviewer` — an approval decision with no named
-  human is not a valid request shape.
+  rejects an empty `reviewer`. (Since the security step, the reviewer is
+  the authenticated principal; a body `reviewer` naming anyone else is
+  refused — see APR-04…08.)
 
 ### Results
 
@@ -812,11 +821,13 @@ production security:
   whether a real Claude model can be socially engineered by clever wording
   (that needs a live Bedrock evaluation, out of scope for this
   credential-free repo).
-- No authentication/authorization layer — `reviewer` is a free-text field,
-  not a verified identity.
-- In-memory, process-local stores (unchanged since Phase 4) — no
-  multi-instance or network-level threat modeling.
-- 24 deterministic cases target specific, previously-identified failure
+- ~~No authentication/authorization layer; in-memory stores~~ — addressed
+  by the security step: authenticated, role-checked reviewers and durable
+  stores, with six added cases (APR-04…APR-08, ARG-04) covering them. The
+  suite now has 30 cases.
+- No network-level threat modeling (TLS termination, WAF, rate limiting
+  beyond login throttling) — deployment concerns outside this repo.
+- The deterministic cases target specific, previously-identified failure
   modes; this is not exhaustive fuzzing.
 - RAG defenses are structural (retrieval provenance), not semantic — the
   system doesn't classify document *content* as malicious, by design
@@ -847,19 +858,28 @@ The [`Dockerfile`](Dockerfile) packages the Phase 4 API
   (uid 10001), no build tools in the runtime image, and it runs under a
   read-only root filesystem with all capabilities dropped. A `HEALTHCHECK`
   polls `GET /health`.
-- **Single worker, by design.** Approvals and cases live in process
-  memory, so the image runs one uvicorn worker — the human-approval gate
-  needs the approval and its decision to reach the same process. Scale with
-  more containers only once there is a shared approval/case store.
+- **Durable state on a volume.** Users, approvals, cases, investigation
+  results and the audit log live in SQLite at `/app/var` — the only
+  writable path besides `/tmp` — so mount a volume there. The JWT signing
+  key is supplied at run time, never baked in. One uvicorn worker by
+  default (A2A task state and the login throttle are per-process); point
+  `BANKSHIELD_DATABASE_URL` at PostgreSQL to scale out.
 
 ```
 docker build -t bankshield-ai .
-docker run --rm -p 8000:8000 \
+docker volume create bankshield-data
+docker run -d --name bankshield -p 8000:8000 \
   --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+  -v bankshield-data:/app/var \
+  -e BANKSHIELD_JWT_SECRET="$(openssl rand -base64 48)" \
   bankshield-ai
 
+# Accounts are created with operator access only (no HTTP endpoint for it):
+docker exec -it bankshield python -m bankshield.auth.cli create-user alice.analyst --role analyst
+docker exec -it bankshield python -m bankshield.auth.cli create-user rita.reviewer --role reviewer
+
 curl http://localhost:8000/health                      # {"status":"ok"}
-python scripts/smoke_test_api.py http://localhost:8000  # end-to-end check, incl. the approval gate
+scripts/docker_smoke.sh bankshield-ai                  # full hardened smoke test + restart check (what CI runs)
 ```
 
 `docker ps` shows the container as `healthy` once the health check
@@ -867,9 +887,10 @@ passes. Behind a TLS-intercepting proxy, give pip its CA bundle as a build
 secret (it is never stored in an image layer):
 `docker build --secret id=pip_cert,src=/path/to/ca-bundle.crt -t bankshield-ai .`
 
-The image holds synthetic data only. CORS is open (`*`) and there is no
-authentication layer yet (see Roadmap), so don't expose it publicly as-is
-with real data.
+The image holds synthetic data only. Every non-public endpoint requires a
+token, but CORS is open (`*`) and TLS is expected to be terminated in front
+of the container (load balancer / API gateway) — configure both before
+exposing it beyond a trusted network.
 
 ## MCP server
 
@@ -958,10 +979,12 @@ CLI (TypeScript SDK).
 
 ### Limitations
 
-- **No authentication.** stdio means the server runs with the privileges
-  of whoever launches it, and anyone who can launch it can read all of the
-  (synthetic) data the tools expose. No network transport is provided on
-  purpose: one would need authentication and authorization first.
+- **No authentication (local stdio).** The server runs with the privileges
+  of whoever launches it, and anyone who can launch it can read the
+  (synthetic) data the tools expose. It has no tool that touches approvals,
+  cases, users or identities, so it can't decide an approval or act as a
+  reviewer even with full access to its own process. No network transport
+  is provided on purpose: one would need the API's token checks first.
 - **No per-caller scoping or rate limiting.** Any connected client can
   query any transaction or customer. Fine for synthetic data; real data
   would need entitlement checks and audit logging per caller.
@@ -983,7 +1006,7 @@ would.
 ```mermaid
 flowchart LR
     caller["A2A client<br/>(analyst tool, orchestrator,<br/>another agent)"]
-    reviewer["Human reviewer<br/>(named)"]
+    reviewer["Human reviewer<br/>(reviewer token)"]
 
     subgraph api["BankShield API process (uvicorn, 1 worker)"]
         triage["Triage Agent<br/>/a2a/triage"]
@@ -995,15 +1018,15 @@ flowchart LR
         decision["POST /approvals/{id}/decision"]
     end
 
-    caller -- "A2A SendMessage<br/>{transaction_ids}" --> triage
+    caller -- "A2A SendMessage + bearer token<br/>{transaction_ids}" --> triage
     triage -- "get_risk_score" --> tools
-    triage -- "A2A SendMessage<br/>{transaction_id}<br/>(Tier 1/2 only)" --> investigator
+    triage -- "A2A SendMessage, caller's token<br/>{transaction_id}<br/>(Tier 1/2 only)" --> investigator
     investigator --> loop
     loop -- "read-only tool calls" --> tools
     loop -- "create_case → proposal only" --> gate
     investigator -. "summary + pending approval IDs" .-> triage
     triage -. "triage report" .-> caller
-    reviewer -- "approve/reject,<br/>reviewer required" --> decision
+    reviewer -- "approve/reject<br/>(identity from token)" --> decision
     decision --> gate
     gate -- "on approval only" --> cases
 ```
@@ -1026,13 +1049,15 @@ app (`src/bankshield/agents/server.py`), and the offline/Bedrock switch
 - **Agents can propose, never approve.** The investigation agent's only
   consequential path is the existing `create_case` tool, which files a
   `PendingApproval` and nothing else. Neither agent has any code path to
-  `ApprovalStore.decide` or `CaseStore`; a case exists only after a named
-  reviewer calls `POST /approvals/{approval_id}/decision`. Reports carry
+  `ApprovalStore.decide` or `CaseStore`; a case exists only after an
+  authenticated reviewer calls `POST /approvals/{approval_id}/decision`.
+  Agents run with the caller's own token (the triage agent forwards it), and
+  `agent`-role service accounts are refused by the decision endpoint. Reports carry
   `human_action_required` and the pending approval IDs, and the full
   investigation is viewable at `GET /investigations/{transaction_id}`.
 - **Same process, same queue.** The agents run inside the API process, so a
   proposal lands in the exact `ApprovalStore` the decision endpoint reads
-  (the stores are in-memory — see Limitations).
+  (now durable — see Security).
 - **Inbound A2A messages are untrusted input.** Each agent accepts exactly
   one user-role JSON data part matching a strict schema (`extra="forbid"`,
   bounded lengths, batch ≤ 20). Free-text parts, extra parts, and smuggled
@@ -1053,7 +1078,7 @@ uvicorn bankshield.api.app:app --app-dir src     # or the Docker image
 
 curl http://localhost:8000/a2a/triage/.well-known/agent-card.json
 
-curl -X POST http://localhost:8000/a2a/triage \
+curl -X POST http://localhost:8000/a2a/triage -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
   -d '{"jsonrpc": "2.0", "id": "1", "method": "SendMessage",
        "params": {"message": {"messageId": "m1", "role": "ROLE_USER",
@@ -1083,19 +1108,153 @@ smoke test (`scripts/smoke_test_api.py`) repeats the triage → investigation
 
 ### Limitations
 
-- **No authentication on A2A or approvals.** The agent cards declare no
-  security scheme and the approval endpoint trusts the `reviewer` name it
-  is given. The gate guarantees an explicit human *decision step* that no
-  agent takes — not that the caller is an authorized human. Before real
-  use: authenticate A2A callers (A2A security schemes) and require an
-  authenticated reviewer identity on `/approvals/{id}/decision`.
-- **In-memory, single-process state.** Approvals, cases, and A2A tasks live
-  in process memory: they reset on restart, and the agents must share the
-  API process. A durable shared store would let the agents run as separate
-  services and the API scale beyond one worker.
+- ~~No authentication; in-memory state~~ — addressed by the security step:
+  A2A calls need a bearer token (analyst, agent or admin; declared on the
+  agent cards), decisions need an authenticated reviewer, and approvals and
+  cases are durable.
+- **A2A task state is still in memory** (`InMemoryTaskStore`): completed
+  tasks can't be fetched with `GetTask` after a restart. The *results* that
+  matter — proposals, approvals, cases, investigation results — are durable.
 - **Synchronous calls only.** No streaming or push notifications; the
   triage agent investigates escalated alerts one at a time (fine for the
   1–20 alert batches it accepts).
+
+## Security: authentication, authorization, and durable state
+
+Every human and agent action now goes through an authenticated identity
+with a role, and the approval gate's state is durable.
+
+```mermaid
+flowchart LR
+    analyst["Analyst<br/>(analyst token)"]
+    reviewer["Reviewer<br/>(reviewer token)"]
+    agentcaller["A2A caller<br/>(agent / analyst token)"]
+    mcp["MCP client<br/>(local stdio)"]
+    operator["Operator<br/>(shell / docker exec)"]
+
+    subgraph api["BankShield API process"]
+        login["POST /auth/token<br/>scrypt verify + throttle → JWT"]
+        guard["require_roles<br/>verify JWT → reload user + role from DB"]
+        a2amw["A2A middleware<br/>bearer token, role check"]
+        agents["Triage → Investigation agents<br/>(caller's token forwarded)"]
+        invest["POST /investigations<br/>run_investigation"]
+        decide["POST /approvals/{id}/decision<br/>reviewer only · identity = token<br/>no self-approval"]
+    end
+
+    mcpserver["MCP server<br/>5 read-only tools<br/>(no approval/case/user tools)"]
+    cli["bankshield.auth.cli<br/>create / disable users"]
+
+    subgraph db["Database (SQLite on a volume → PostgreSQL/RDS)"]
+        users[("users")]
+        approvals[("approvals<br/>requested_by, reviewer")]
+        cases[("cases<br/>approved_by, unique approval_id")]
+        audit[("audit_log<br/>append-only")]
+    end
+
+    analyst --> login
+    reviewer --> login
+    login --> users
+    analyst -- bearer --> guard --> invest
+    reviewer -- bearer --> guard --> decide
+    agentcaller -- bearer --> a2amw --> agents
+    invest -- "create_case → pending,<br/>requested_by = caller" --> approvals
+    agents -- "create_case → pending,<br/>requested_by = caller" --> approvals
+    decide -- "one transaction: pending→approved<br/>+ case insert + audit" --> approvals
+    decide --> cases
+    guard -. "denials" .-> audit
+    decide -.-> audit
+    mcp --> mcpserver
+    operator --> cli --> users
+```
+
+### Architecture decisions
+
+| Decision | Why |
+|---|---|
+| **JWT bearer tokens (HS256, PyJWT), 30-min expiry**, issued by `POST /auth/token` (OAuth2 password flow) | Standard, stateless, works for the browser frontend, scripts, and A2A callers alike. Verification pins the algorithm (no `alg: none` or algorithm confusion) and requires `exp`/`iat`/`sub`/issuer/audience. The token module is the one seam to swap for a managed IdP (Amazon Cognito / OIDC, RS256 via JWKS). |
+| **Role re-read from the database on every request** | The token's role is only a hint. Disabling a user or changing their role takes effect on their very next request, not at token expiry. |
+| **scrypt password hashes** (stdlib `hashlib`), per-hash salt and cost parameters, constant-time compare, dummy hash for unknown users, 5-failure lockout | Memory-hard against offline cracking; login timing doesn't reveal which usernames exist; online guessing is throttled. No new dependency. |
+| **Four roles** — `analyst`, `reviewer`, `admin`, `agent` | Least privilege. Only `reviewer` can decide approvals — not `admin`, not `agent`. `agent` (service accounts) can call the A2A agents and read data but can't run HTTP investigations or decide anything. Only `admin` can read the audit log. |
+| **Reviewer identity comes from the token, never the body** | The old free-text `reviewer` field let anyone attribute a decision to anyone. It is now optional; if sent it must name the caller (else 403, audited). |
+| **Four-eyes rule in the store** | Proposals record `requested_by` (the authenticated caller, carried in a context variable down to the `create_case` tool). `ApprovalStore.decide` refuses `reviewer == requested_by`, for every caller path, not just HTTP. |
+| **SQLAlchemy Core + SQLite by default, PostgreSQL-ready** | Zero setup locally and in Docker (a volume at `/app/var`); the schema uses only portable types, so RDS/Aurora is a URL change (`BANKSHIELD_DATABASE_URL`) plus a driver. |
+| **Decision + case creation in one transaction**, guarded by a conditional `UPDATE … WHERE status='pending'` and a unique `cases.approval_id` | An approval is decided at most once and its case exists exactly when it's approved — even with concurrent reviewers or multiple API processes. Case creation is driven by the stored action, not an in-memory callback, so it works after a restart. |
+| **Append-only audit log** in the same transactions as the changes it records | Logins (ok / failed / locked), approval requests, decisions, case creation, and authorization denials. Admin-readable at `GET /audit`. |
+| **A2A: bearer token required; the triage agent forwards the caller's token** | Agents never act with more authority than their caller, and proposals they produce are attributed to that caller. Agent cards declare the bearer scheme (`securitySchemes`). |
+| **No HTTP endpoint for user management** | Accounts are created/disabled with `python -m bankshield.auth.cli` (shell or `docker exec`). Nothing that can only call the API — an MCP client, an A2A agent, a stolen token — can create a reviewer. |
+
+### What MCP and A2A agents can't do
+
+- **Decide or approve:** the decision endpoint accepts only the `reviewer`
+  role; agent service accounts get 403. The MCP server has no approval, case
+  or user tools at all.
+- **Impersonate a reviewer:** decisions are attributed to the token's
+  subject; a body `reviewer` naming anyone else gets 403. Tokens can't be
+  forged without the signing key, and a reviewer can't approve a proposal
+  they requested.
+- **Escalate through each other:** the triage agent calls the investigation
+  agent with the caller's own token, so a chain of agents never gains a role
+  its caller lacks.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BANKSHIELD_DATABASE_URL` | `sqlite:///var/bankshield.db` (repo), `sqlite:////app/var/bankshield.db` (image) | Any SQLAlchemy URL, e.g. `postgresql+psycopg://…` |
+| `BANKSHIELD_JWT_SECRET` | random per process (warning logged) | ≥ 32 bytes. Set it in any real deployment (e.g. from AWS Secrets Manager) or tokens die on restart |
+| `BANKSHIELD_TOKEN_TTL_MINUTES` | `30` | Access-token lifetime |
+
+```
+python -m bankshield.auth.cli create-user rita.reviewer --role reviewer    # prompts for a password (min 12 chars)
+python -m bankshield.auth.cli disable-user rita.reviewer                     # revokes access immediately
+python -m bankshield.auth.cli list-users
+```
+
+The frontend has a sign-in box; the token lives in `sessionStorage` (gone
+when the tab closes), and Approve/Reject is attributed to whoever is signed
+in.
+
+### Tests
+
+- `tests/test_auth.py` (43): login, wrong/unknown credentials, lockout,
+  password hashing; 401 on every protected endpoint without a token;
+  garbage, `alg: none`, wrong-key, expired, wrong-issuer/audience and
+  unknown-user tokens rejected; disabling a user or changing their role
+  revokes an existing token immediately; the role matrix (only reviewers
+  decide, only admins read the audit log, agents can't run HTTP
+  investigations); denials audited; decisions attributed to the token;
+  impersonation and self-approval refused; the provisioning CLI.
+- `tests/test_persistence.py` (6): a pending approval survives a restart
+  and creates its case when approved afterwards; rejection never creates a
+  case; eight concurrent deciders on separate engines → exactly one wins and
+  one case exists; a self-approval is refused and audited; a forged
+  "approved" object can't create a case on the shared database; and a
+  **real uvicorn process stopped and restarted twice** keeps the pending
+  approval, the investigation, the reviewer's token, the case, and the audit
+  trail.
+- `tests/test_a2a_agents.py` adds token delegation (proposals attributed to
+  the A2A caller) and 401/403 for unauthenticated/under-privileged agent
+  calls.
+- Red team: six new cases (APR-04…APR-08, ARG-04) — 30/30 blocked.
+- CI's Docker job (`scripts/docker_smoke.sh`) runs the image hardened with a
+  volume, provisions accounts via the CLI, exercises auth/RBAC/the gate/A2A,
+  restarts the container, and checks that the state persisted.
+
+### Limitations
+
+- **Local identity store.** Users and passwords live in BankShield's
+  database. A production deployment should federate to a managed identity
+  provider with MFA (Cognito/OIDC) — the token module is the seam for that.
+- **HS256 shared secret.** Anyone holding `BANKSHIELD_JWT_SECRET` can mint
+  tokens; keep it in a secrets manager and rotate it (rotation logs everyone
+  out). Asymmetric keys come with an IdP.
+- **No token revocation list.** Disabling a user revokes their tokens
+  immediately (users are re-read per request), but a single token can't be
+  revoked on its own before it expires (30 minutes by default).
+- **Per-process login throttle and A2A task store.** Fine for one worker;
+  multiple instances need them in the shared database or the IdP.
+- **Schema migrations.** Tables are created with `create_all`; schema
+  changes beyond additive ones need Alembic.
 
 ## Continuous integration
 
@@ -1108,10 +1267,12 @@ attack is not blocked, then `python scripts/check_reproducibility.py`
 (see below). Dependencies are installed from `requirements-lock.txt`.
 The MCP server is checked by its pytest suite and by
 `scripts/check_mcp_inspector.sh` (MCP Inspector CLI over stdio).
-A parallel `docker` job builds the image, starts it with a read-only root
-filesystem and no capabilities, waits for its health check, and runs
-`scripts/smoke_test_api.py` against it (HTTP API, approval gate, and the A2A
-triage → investigation flow over raw JSON-RPC).
+A parallel `docker` job builds the image and runs `scripts/docker_smoke.sh`:
+the container starts with a read-only root filesystem, no capabilities and
+its state on a volume; accounts are provisioned through the CLI; then
+`scripts/smoke_test_api.py` checks authentication, RBAC, the approval gate
+and the A2A triage → investigation flow over raw JSON-RPC; finally the
+container is restarted and the persisted cases and audit trail are verified.
 Everything runs offline — no AWS credentials. The JUnit results,
 regenerated reports/metrics, and the resolved dependency versions
 (`pip-freeze.txt`) are uploaded as a build artifact.
@@ -1150,7 +1311,10 @@ Phases 1 through 5 (this repo) are the classical ML + cyber-telemetry +
 graph-intelligence foundation, the AI-assisted investigation layer on top
 of it, and a defensive red-team evaluation of that layer. Possible next
 steps: a live-model (Bedrock) red-team run to complement the offline suite
-above, a durable approval/case store, and an authentication layer.
+above. The durable approval/case store and the authentication layer are
+now in place (see Security); next would be a managed identity provider
+(Cognito/OIDC), PostgreSQL with Alembic migrations, and a shared A2A task
+store so the agents can run as separate services.
 
 ## License
 

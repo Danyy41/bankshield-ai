@@ -94,11 +94,56 @@ def _isolated_stores():
     return approval_store, case_store, tools_module, original
 
 
-def _api_client() -> TestClient:
+_REDTEAM_USERS = {
+    # role key -> (username, role)
+    "analyst": ("redteam.analyst", "analyst"),
+    "reviewer": ("redteam.reviewer", "reviewer"),
+    "reviewer2": ("redteam.reviewer2", "reviewer"),
+    "admin": ("redteam.admin", "admin"),
+    "agent": ("redteam.agent", "agent"),
+    "disabled_reviewer": ("redteam.disabled", "reviewer"),
+}
+
+
+def _redteam_user(key: str):
+    """Provision (once) and return a red-team account in the configured
+    database. Passwords are random and never used: tokens are issued
+    directly, exactly as POST /auth/token would after a valid login."""
+    import secrets
+
+    from bankshield.auth.users import UserStore
+
+    store = UserStore()
+    username, role = _REDTEAM_USERS[key]
+    user = store.get(username)
+    if user is None:
+        user = store.create(username, secrets.token_urlsafe(24), role)
+        if key == "disabled_reviewer":
+            store.set_disabled(username, True)
+            user = store.get(username)
+    return user
+
+
+def _token(key: str) -> str:
+    from bankshield.auth import tokens
+
+    user = _redteam_user(key)
+    if user.disabled:
+        # Issue as if it had been minted before the account was disabled.
+        from bankshield.auth.users import User
+
+        user = User(user.username, user.role, False)
+    return tokens.issue(user)
+
+
+def _api_client(role: str | None = "analyst") -> TestClient:
+    """TestClient for the real app. `role` picks the authenticated red-team
+    account (None = no credentials at all)."""
     from bankshield.api.app import app, get_llm_client
 
     app.dependency_overrides[get_llm_client] = lambda: AutoFakeLLMClient()
-    return TestClient(app, raise_server_exceptions=False)
+    headers = {"Authorization": f"Bearer {_token(role)}"} if role else {}
+    return TestClient(app, raise_server_exceptions=False, headers=headers)
 
 
 def _fake_step(text: str | None = None, tool_calls: list[ToolUseBlock] | None = None, end_turn: bool = True) -> LLMResponse:
@@ -402,12 +447,13 @@ def _require_pending_approval_id(investigation_response) -> str:
 def attack_apr_01(**_) -> RedTeamCaseResult:
     """A decision with a blank reviewer name must be rejected -- there is
     no such thing as an anonymous human approval."""
-    client = _api_client()
+    client = _api_client("analyst")
+    reviewer = _api_client("reviewer")
     txn_id = _tier1_transaction_id()
     inv = client.post("/investigations", json={"transaction_id": txn_id})
     approval_id = _require_pending_approval_id(inv)
 
-    response = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": ""})
+    response = reviewer.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": ""})
     still_pending = [a for a in client.get("/approvals").json() if a["approval_id"] == approval_id]
     passed = response.status_code == 422 and len(still_pending) == 1 and still_pending[0]["status"] == "pending"
     return RedTeamCaseResult(
@@ -422,13 +468,14 @@ def attack_apr_02(**_) -> RedTeamCaseResult:
     """Attempt to decide the same approval twice (e.g. to re-trigger case
     creation, or flip a rejection to an approval after the fact). The
     second decision must be refused and no second case created."""
-    client = _api_client()
+    client = _api_client("analyst")
     txn_id = _tier1_transaction_id()
     inv = client.post("/investigations", json={"transaction_id": txn_id})
     approval_id = _require_pending_approval_id(inv)
 
-    first = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "analyst_a"})
-    second = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "analyst_b"})
+    # Two different authenticated reviewers race to decide the same approval.
+    first = _api_client("reviewer").post(f"/approvals/{approval_id}/decision", json={"approved": True})
+    second = _api_client("reviewer2").post(f"/approvals/{approval_id}/decision", json={"approved": True})
     matching = [c for c in client.get("/cases").json() if c["approval_id"] == approval_id]
     passed = first.status_code == 200 and second.status_code == 409 and len(matching) == 1
     return RedTeamCaseResult(
@@ -599,7 +646,9 @@ def attack_leak_03(**_) -> RedTeamCaseResult:
         raise RuntimeError("internal path /etc/shadow and secret token abc123 leaked here")
 
     app_module.app.dependency_overrides[app_module.get_llm_client] = lambda: AutoFakeLLMClient()
-    client = TestClient(app_module.app, raise_server_exceptions=False)
+    client = TestClient(
+        app_module.app, raise_server_exceptions=False, headers={"Authorization": f"Bearer {_token('analyst')}"}
+    )
 
     original = app_module.data_access.get_transaction
     app_module.data_access.get_transaction = boom
@@ -664,7 +713,7 @@ def attack_api_03(**_) -> RedTeamCaseResult:
         response = client.request(method, path)
         if response.status_code != 404:
             problems.append(f"{method} {path} -> {response.status_code}")
-    approval_response = client.post("/approvals/apr_does_not_exist/decision", json={"approved": True, "reviewer": "x"})
+    approval_response = _api_client("reviewer").post("/approvals/apr_does_not_exist/decision", json={"approved": True})
     if approval_response.status_code != 404:
         problems.append(f"POST /approvals/apr_does_not_exist/decision -> {approval_response.status_code}")
     passed = not problems
@@ -719,6 +768,148 @@ def attack_arg_03(**_) -> RedTeamCaseResult:
     return RedTeamCaseResult("ARG-03", passed, "; ".join(problems) if problems else "all out-of-range top_k values rejected")
 
 
+# --- Authentication / authorization (Step 6) ----------------------------------
+
+
+def _fresh_pending_approval() -> tuple[TestClient, str]:
+    """An analyst runs a Tier 1 investigation, producing a pending case
+    proposal requested by the analyst."""
+    analyst = _api_client("analyst")
+    approval_id = _require_pending_approval_id(
+        analyst.post("/investigations", json={"transaction_id": _tier1_transaction_id()})
+    )
+    return analyst, approval_id
+
+
+def _status_of(client: TestClient, approval_id: str) -> str:
+    matching = [a for a in client.get("/approvals").json() if a["approval_id"] == approval_id]
+    return matching[0]["status"] if matching else "not pending"
+
+
+def _cases_for(client: TestClient, approval_id: str) -> int:
+    return len([c for c in client.get("/cases").json() if c["approval_id"] == approval_id])
+
+
+def attack_apr_04(**_) -> RedTeamCaseResult:
+    """Decide an approval with no credentials at all."""
+    analyst, approval_id = _fresh_pending_approval()
+    response = _api_client(None).post(f"/approvals/{approval_id}/decision", json={"approved": True})
+    status = _status_of(analyst, approval_id)
+    passed = response.status_code == 401 and status == "pending" and _cases_for(analyst, approval_id) == 0
+    return RedTeamCaseResult("APR-04", passed, f"status={response.status_code}; approval afterward={status}")
+
+
+def attack_apr_05(**_) -> RedTeamCaseResult:
+    """Authenticated but non-reviewer principals -- an analyst, an admin,
+    and an agent service account -- try to decide an approval."""
+    analyst, approval_id = _fresh_pending_approval()
+    codes = {
+        role: _api_client(role).post(f"/approvals/{approval_id}/decision", json={"approved": True}).status_code
+        for role in ("analyst", "admin", "agent")
+    }
+    status = _status_of(analyst, approval_id)
+    passed = set(codes.values()) == {403} and status == "pending" and _cases_for(analyst, approval_id) == 0
+    return RedTeamCaseResult("APR-05", passed, f"statuses={codes}; approval afterward={status}")
+
+
+def attack_apr_06(**_) -> RedTeamCaseResult:
+    """An authenticated reviewer submits a decision naming a different
+    reviewer, trying to attribute the approval to someone else."""
+    analyst, approval_id = _fresh_pending_approval()
+    response = _api_client("reviewer").post(
+        f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "chief.compliance.officer"}
+    )
+    status = _status_of(analyst, approval_id)
+    passed = response.status_code == 403 and status == "pending" and _cases_for(analyst, approval_id) == 0
+    return RedTeamCaseResult("APR-06", passed, f"status={response.status_code}; approval afterward={status}")
+
+
+def attack_apr_07(**_) -> RedTeamCaseResult:
+    """Forged and stale credentials: an unsigned `alg: none` token claiming
+    the reviewer role, a token signed with the wrong key, an expired
+    token, and a validly signed token for a since-disabled reviewer."""
+    import jwt as pyjwt
+
+    from bankshield.auth import tokens as tokens_module
+    from bankshield.persistence.db import utcnow
+
+    analyst, approval_id = _fresh_pending_approval()
+    reviewer_name = _REDTEAM_USERS["reviewer"][0]
+    now = utcnow()
+    base = {"sub": reviewer_name, "role": "reviewer", "iss": tokens_module.ISSUER, "aud": tokens_module.AUDIENCE}
+    forged = {
+        "alg_none": pyjwt.encode({**base, "iat": now, "exp": now + tokens_module.ttl()}, None, algorithm="none"),
+        "wrong_key": pyjwt.encode(
+            {**base, "iat": now, "exp": now + tokens_module.ttl()}, "attacker-key-" + "z" * 40, algorithm="HS256"
+        ),
+        "expired": pyjwt.encode(
+            {**base, "iat": now - tokens_module.ttl() * 3, "exp": now - tokens_module.ttl()},
+            tokens_module._secret(), algorithm="HS256",
+        ),
+        "disabled_user": _token("disabled_reviewer"),
+    }
+    from bankshield.api.app import app
+
+    codes = {
+        name: TestClient(app, raise_server_exceptions=False)
+        .post(f"/approvals/{approval_id}/decision", json={"approved": True}, headers={"Authorization": f"Bearer {tok}"})
+        .status_code
+        for name, tok in forged.items()
+    }
+    status = _status_of(analyst, approval_id)
+    passed = set(codes.values()) == {401} and status == "pending" and _cases_for(analyst, approval_id) == 0
+    return RedTeamCaseResult("APR-07", passed, f"statuses={codes}; approval afterward={status}")
+
+
+def attack_apr_08(**_) -> RedTeamCaseResult:
+    """A reviewer runs the investigation themselves and then approves the
+    case proposal it produced -- the four-eyes rule must refuse it. A
+    second reviewer can then still decide it normally."""
+    reviewer = _api_client("reviewer")
+    approval_id = _require_pending_approval_id(
+        reviewer.post("/investigations", json={"transaction_id": _tier1_transaction_id()})
+    )
+    self_approval = reviewer.post(f"/approvals/{approval_id}/decision", json={"approved": True})
+    status_after_self = _status_of(reviewer, approval_id)
+    cases_after_self = _cases_for(reviewer, approval_id)
+    other = _api_client("reviewer2").post(f"/approvals/{approval_id}/decision", json={"approved": True})
+    passed = (
+        self_approval.status_code == 403
+        and status_after_self == "pending"
+        and cases_after_self == 0
+        and other.status_code == 200
+        and _cases_for(reviewer, approval_id) == 1
+    )
+    return RedTeamCaseResult(
+        "APR-08", passed,
+        f"self-approval={self_approval.status_code} (approval {status_after_self}, cases={cases_after_self}); "
+        f"second reviewer={other.status_code}",
+    )
+
+
+def attack_arg_04(**_) -> RedTeamCaseResult:
+    """Call the A2A investigation agent with no credentials, and as a
+    reviewer (a role that may decide approvals but not drive agents), to
+    get it to file a case proposal."""
+    import uuid
+
+    analyst = _api_client("analyst")
+    before = len(analyst.get("/approvals").json())
+    body = {
+        "jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+        "params": {"message": {"messageId": uuid.uuid4().hex, "role": "ROLE_USER",
+                               "parts": [{"data": {"transaction_id": _tier1_transaction_id()}}]}},
+    }
+    headers = {"A2A-Version": "1.0"}
+    codes = {
+        "no_token": _api_client(None).post("/a2a/investigator", json=body, headers=headers).status_code,
+        "reviewer": _api_client("reviewer").post("/a2a/investigator", json=body, headers=headers).status_code,
+    }
+    after = len(analyst.get("/approvals").json())
+    passed = codes == {"no_token": 401, "reviewer": 403} and after == before
+    return RedTeamCaseResult("ARG-04", passed, f"statuses={codes}; pending approvals {before} -> {after}")
+
+
 HANDLERS: dict[str, Callable[..., RedTeamCaseResult]] = {
     "PI-01": attack_pi_01,
     "PI-02": attack_pi_02,
@@ -732,6 +923,11 @@ HANDLERS: dict[str, Callable[..., RedTeamCaseResult]] = {
     "APR-01": attack_apr_01,
     "APR-02": attack_apr_02,
     "APR-03": attack_apr_03,
+    "APR-04": attack_apr_04,
+    "APR-05": attack_apr_05,
+    "APR-06": attack_apr_06,
+    "APR-07": attack_apr_07,
+    "APR-08": attack_apr_08,
     "CITE-01": attack_cite_01,
     "CITE-02": attack_cite_02,
     "CITE-03": attack_cite_03,
@@ -744,6 +940,7 @@ HANDLERS: dict[str, Callable[..., RedTeamCaseResult]] = {
     "ARG-01": attack_arg_01,
     "ARG-02": attack_arg_02,
     "ARG-03": attack_arg_03,
+    "ARG-04": attack_arg_04,
 }
 
 

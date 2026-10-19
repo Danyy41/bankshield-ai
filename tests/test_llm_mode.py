@@ -35,7 +35,7 @@ def test_invalid_mode_raises_clear_error(monkeypatch):
         get_llm_client()
 
 
-def test_api_works_with_zero_configuration(monkeypatch):
+def test_api_works_with_zero_configuration(monkeypatch, auth_headers):
     """The public-demo default: no BANKSHIELD_LLM_MODE set, no
     dependency_overrides -- the app must still serve a full investigation
     end to end, since offline is the default mode."""
@@ -55,7 +55,7 @@ def test_api_works_with_zero_configuration(monkeypatch):
     if txn_id is None:
         pytest.skip("no tier_1 transaction available")
 
-    with TestClient(app) as client:
+    with TestClient(app, headers=auth_headers("analyst")) as client:
         assert client.get("/health").json() == {"status": "ok"}
         response = client.post("/investigations", json={"transaction_id": txn_id})
         assert response.status_code == 200

@@ -19,13 +19,14 @@ from typing import Annotated, Callable
 
 import a2a.types as a2a_types
 import httpx
-from a2a.client import ClientConfig, create_client
+from a2a.client import A2AClientError, ClientConfig, create_client
 from a2a.helpers import get_data_parts, get_message_text, new_data_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from bankshield.agents.common import CARD_PATH, parse_request
+from bankshield.auth.context import current_token
 from bankshield.agents.investigator import HUMAN_STEP, InvestigationSummary
 from bankshield.agents.tasks import run_task
 from bankshield.investigation import tools
@@ -57,20 +58,27 @@ class InvestigatorClient:
         self.httpx_client_factory = httpx_client_factory or (lambda: httpx.AsyncClient(timeout=120))
 
     async def investigate(self, transaction_id: str) -> InvestigationSummary:
+        token = current_token.get()
+        if not token:
+            raise InvestigationFailed("no caller credentials to delegate to the investigation agent")
+        task = None
         async with self.httpx_client_factory() as http:
-            client = await create_client(
-                self.url,
-                client_config=ClientConfig(streaming=False, httpx_client=http),
-                relative_card_path=CARD_PATH,
-            )
-            message = new_data_message({"transaction_id": transaction_id}, role=a2a_types.Role.ROLE_USER)
-            request = a2a_types.SendMessageRequest(message=message)
-            task = None
-            async for response in client.send_message(request):
-                if response.HasField("task"):
-                    task = response.task
+            # Delegation: call with the caller's own token, never a stronger one.
+            http.headers["Authorization"] = f"Bearer {token}"
+            try:
+                client = await create_client(
+                    self.url,
+                    client_config=ClientConfig(streaming=False, httpx_client=http),
+                    relative_card_path=CARD_PATH,
+                )
+                message = new_data_message({"transaction_id": transaction_id}, role=a2a_types.Role.ROLE_USER)
+                async for response in client.send_message(a2a_types.SendMessageRequest(message=message)):
+                    if response.HasField("task"):
+                        task = response.task
+            except (A2AClientError, httpx.HTTPError) as exc:
+                raise InvestigationFailed(f"investigation agent call failed: {type(exc).__name__}") from exc
         if task is None:
-            raise RuntimeError("investigation agent returned no task")
+            raise InvestigationFailed("investigation agent returned no task")
         if task.status.state != a2a_types.TaskState.TASK_STATE_COMPLETED:
             state = a2a_types.TaskState.Name(task.status.state)
             reason = get_message_text(task.status.message) if task.status.HasField("message") else ""

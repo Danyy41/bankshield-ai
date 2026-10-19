@@ -17,6 +17,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from bankshield.auth.context import requesting_username
 from bankshield.investigation import data_access
 from bankshield.investigation.approvals import get_approval_store
 from bankshield.investigation.case_store import get_case_store
@@ -180,12 +181,17 @@ def _tool_create_case(input: dict[str, Any]) -> dict:
         "summary": input["summary"],
         "cited_evidence": input.get("cited_evidence", []),
     }
+    # No downstream callback: the approval store creates the case from the
+    # stored proposal when (and only when) a reviewer approves it, which
+    # keeps working across restarts. `requested_by` is the authenticated
+    # caller -- the approval gate refuses to let them approve their own
+    # proposal.
     approval = get_approval_store().request(
         transaction_id=transaction_id,
         action="create_case",
         proposed_input=proposed_input,
         rationale=input["summary"],
-        on_approve=lambda approved: get_case_store().create_from_approval(approved),
+        requested_by=requesting_username(),
     )
     return {
         "status": "pending_approval",

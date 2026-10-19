@@ -52,6 +52,16 @@ def build_agent_card(
             )
         ],
         capabilities=a2a_types.AgentCapabilities(streaming=False, push_notifications=False),
+        security_schemes={
+            "bearer": a2a_types.SecurityScheme(
+                http_auth_security_scheme=a2a_types.HTTPAuthSecurityScheme(
+                    scheme="bearer",
+                    bearer_format="JWT",
+                    description="BankShield access token from POST /auth/token (roles: analyst, agent, admin)",
+                )
+            )
+        },
+        security_requirements=[a2a_types.SecurityRequirement(schemes={"bearer": a2a_types.StringList(list=[])})],
         default_input_modes=[DATA_MEDIA_TYPE],
         default_output_modes=[DATA_MEDIA_TYPE],
         skills=[skill],

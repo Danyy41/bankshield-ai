@@ -26,3 +26,8 @@ mcp==2.3.0
 
 # A2A triage + investigation agents (src/bankshield/agents/)
 a2a-sdk[http-server]==1.2.2
+
+# Durable state + authentication (src/bankshield/persistence/, src/bankshield/auth/)
+SQLAlchemy==2.0.54
+PyJWT==2.15.1
+python-multipart==0.0.32

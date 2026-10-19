@@ -20,6 +20,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Evaluation runs real investigations, and Tier 1 ones file case proposals.
+# Those are throwaway artifacts, not work for a reviewer: keep them in a
+# private in-memory database instead of the configured one.
+import os  # noqa: E402
+
+os.environ["BANKSHIELD_DATABASE_URL"] = "sqlite://"
+
 from bankshield import config
 from bankshield.investigation.agent import AgentRunConfig
 from bankshield.investigation.evaluation import run_evaluation, select_golden_set

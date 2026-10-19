@@ -24,6 +24,9 @@ reports/figures/*.png
 !models/.gitkeep
 !reports/figures/.gitkeep
 
+# Local durable state (SQLite database: users, approvals, cases, audit log)
+var/
+
 # Editors / OS
 .vscode/
 .idea/

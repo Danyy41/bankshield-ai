@@ -74,7 +74,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     MPLCONFIGDIR=/tmp/matplotlib \
     # Offline (AutoFakeLLMClient) unless explicitly overridden at `docker run`:
     # "bedrock" also needs AWS credentials with bedrock:InvokeModel.
-    BANKSHIELD_LLM_MODE=offline
+    BANKSHIELD_LLM_MODE=offline \
+    # Durable state (users, approvals, cases, audit log) on the /app/var
+    # volume. Point this at PostgreSQL (e.g. RDS) for a real deployment.
+    # BANKSHIELD_JWT_SECRET is deliberately not set here: supply it at run
+    # time (e.g. from AWS Secrets Manager), never in the image.
+    BANKSHIELD_DATABASE_URL=sqlite:////app/var/bankshield.db
 
 WORKDIR /app
 
@@ -92,13 +97,19 @@ s = d.get_store(); t = s.transactions['transaction_id'].iloc[0]; \
 r = d.get_risk_score(t); assert 0.0 <= r['risk_score'] <= 1.0, r; \
 print('artifact check ok:', len(s.transactions), 'transactions')"
 
+# The only writable path the app needs (besides /tmp): mount a volume here
+# so state survives container restarts and replacement.
+RUN mkdir -p /app/var && chown bankshield:bankshield /app/var
+VOLUME ["/app/var"]
+
 USER bankshield:bankshield
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD ["python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
 
-# Exactly one worker: approvals and cases live in process memory (the
-# human-approval gate's ApprovalStore/CaseStore), so a proposal filed in one
-# worker process could not be approved from another.
+# One worker by default. Approvals, cases and users are durable and safe
+# across processes (decisions are conditional updates), but A2A task state
+# and the login throttle are per-process and SQLite allows a single writer;
+# scale out with PostgreSQL behind BANKSHIELD_DATABASE_URL.
 CMD ["uvicorn", "bankshield.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-server-header"]
