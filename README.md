@@ -102,8 +102,7 @@ repository comes from the deterministic offline client. Bedrock
 `BANKSHIELD_BEDROCK_MODEL_ID`) is an optional integration. Its client,
 error handling and diagnostics are covered by tests that stub AWS.
 
-What was verified against a real AWS account, using free and read-only
-calls only:
+What was verified against a real AWS account with free, read-only checks:
 - **Claude Opus 5.5** (`us.anthropic.claude-opus-5-5`): the inference profile
   was found, model availability reported authorized, entitled and agreement
   `AVAILABLE`, and the IAM simulation for the restricted app identity
@@ -113,14 +112,20 @@ calls only:
   us-east-2 and us-west-2. A least-privilege policy was applied, and the IAM
   simulation returned `allowed` through the profile and `implicitDeny` for
   direct calls, which shows the profile condition is enforced. The model
-  agreement was still `NOT_AVAILABLE`.
+  agreement was initially `NOT_AVAILABLE` and later reached `AVAILABLE`.
 
-**What did not succeed:** the live Converse call to Opus 5.5 was denied with
-`AccessDeniedException (HTTP 403): anthropic.claude-opus-5-5 is not
-available for this account`. That is an account-level model restriction,
-not an IAM or code issue. No live request was made to Sonnet 5.5, and the
-Bedrock experiments then ended. **No live Bedrock inference has succeeded,
-and no live investigation output is included or claimed.**
+**What did not succeed:** both models were then tested with real Bedrock
+Converse requests, and both were denied:
+- **Opus 5.5:** `AccessDeniedException (HTTP 403): anthropic.claude-opus-5-5
+  is not available for this account`.
+- **Sonnet 5.5:** the same `AccessDeniedException`, saying the model is not
+  available for this account.
+
+Both denials came after IAM simulation passed and the model agreement
+showed `AVAILABLE`. They are an account-level model restriction, not an IAM
+or code issue. The Bedrock experiments then ended. **No live Bedrock
+inference has succeeded, and no live investigation output is included or
+claimed.**
 
 ### Limitations
 
@@ -898,9 +903,10 @@ still only get the generic message.
 There is no separate IAM action for Converse: it is authorized as
 `bedrock:InvokeModel`.
 
-**Live-run status: not achieved.** The live call was denied by an
-account-level model restriction (`<model> is not available for this account`)
-after IAM and model availability had been verified. No live investigation
+**Live-run status: not achieved.** Live Converse requests to both Claude
+Opus 5.5 and Claude Sonnet 5.5 were denied by an account-level model
+restriction (`<model> is not available for this account`), after IAM and
+the model agreements had been verified. No live investigation
 has been recorded and none is claimed; see
 [Amazon Bedrock status](#amazon-bedrock-status). The scripts above remain for
 anyone running BankShield in an account with model access.
