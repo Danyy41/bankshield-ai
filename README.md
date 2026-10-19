@@ -603,7 +603,7 @@ environment variable, not a code change:
 | `BANKSHIELD_LLM_MODE` | Backend | Requires |
 |---|---|---|
 | `offline` (default) | `AutoFakeLLMClient` — deterministic, scripted | Nothing. Safe default for a public demo deployment. |
-| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API, Claude Opus 5.5 via the `us.anthropic.claude-opus-5-5` inference profile in `us-east-1` (override with `BANKSHIELD_BEDROCK_MODEL_ID` / `BANKSHIELD_BEDROCK_REGION` or `AWS_REGION`) | AWS credentials from the standard provider chain, Bedrock model access, and [`bedrock:InvokeModel`](deploy/iam/bedrock-invoke-policy.json) — see [Running against real Bedrock](#running-against-real-bedrock) |
+| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API, Claude Sonnet 5.5 via the `us.anthropic.claude-sonnet-5-5` inference profile in `us-east-1` (Opus 5.5 optional; override with `BANKSHIELD_BEDROCK_MODEL_ID` / `BANKSHIELD_BEDROCK_REGION` or `AWS_REGION`) | AWS credentials from the standard provider chain, Bedrock model access, and [`bedrock:InvokeModel`](deploy/iam/bedrock-invoke-policy.json) — see [Running against real Bedrock](#running-against-real-bedrock) |
 
 Leaving `BANKSHIELD_LLM_MODE` unset means the deployed API serves real
 requests end-to-end (transactions, risk scores, investigations, the
@@ -645,27 +645,54 @@ python scripts/13_evaluate_investigations.py --live --confirm-billable   # real 
 The same `BedrockClaudeClient` and agent loop, pointed at Amazon Bedrock.
 Offline stays the default; nothing below runs unless you opt in.
 
-**Model.** Claude Opus 5.5 is served on Bedrock only through cross-region
-inference profiles — there is no in-region `anthropic.claude-opus-5-5:0`
-base-model ID to call directly. The default, `us.anthropic.claude-opus-5-5`,
-keeps traffic inside US regions (us-east-1 / us-east-2 / us-west-2), which
-fits a bank's data-residency stance better than `global.` (which may route
-anywhere, at ~10% lower cost). For other geographies set
-`BANKSHIELD_BEDROCK_MODEL_ID` to `eu.`, `jp.` or `au.anthropic.claude-opus-5-5`
-and a matching region.
+**Model.** The default is **Claude Sonnet 5.5** through the
+`us.anthropic.claude-sonnet-5-5` cross-region inference profile. It keeps
+traffic inside US regions, which fits a bank's data-residency stance better
+than `global.` (which may route anywhere, at ~10% lower cost). The model is
+one setting, `BANKSHIELD_BEDROCK_MODEL_ID`; the Converse integration is the
+same for all of them:
+
+| `BANKSHIELD_BEDROCK_MODEL_ID` | Model | List price (in/out per MTok) |
+|---|---|---|
+| `us.anthropic.claude-sonnet-5-5` (default) | Claude Sonnet 5.5 | $2 / $10 |
+| `us.anthropic.claude-opus-5-5` (optional) | Claude Opus 5.5 | $4 / $20 |
+| `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (fallback) | $3 / $15 |
+
+Not every account can invoke every model. Bedrock can answer
+`AccessDeniedException: <model> is not available for this account` even when
+IAM allows the call and the model agreement shows `AVAILABLE`. That is an
+account-level restriction, not a permissions problem, so changing IAM doesn't
+fix it. To find a model your account can use:
+
+```
+python scripts/bedrock_model_access_test.py                    # free: profile + availability per candidate
+python scripts/bedrock_model_access_test.py --confirm-billable # one maxTokens=1 request per candidate
+```
+
+The second command stops at the first model that answers. Denied requests
+aren't billed, so at most one tiny request is (well under $0.001). For other
+geographies use the `eu.`, `jp.` or `au.` profile and a matching region.
 
 **Credentials.** Only boto3's standard provider chain: IAM Identity Center
 (`aws sso login --profile P` + `AWS_PROFILE=P`), an ECS task role or EC2
 instance profile, or environment keys for short-lived credentials. Nothing
-in the app accepts, stores or logs a key; Bedrock errors are logged by code
-only, since AWS error text can contain account IDs and ARNs.
+in the app accepts, stores or logs a key; Bedrock errors are logged with AWS's
+message sanitized (account IDs masked, session names hidden).
 
 **Minimum IAM** — [`deploy/iam/bedrock-invoke-policy.json`](deploy/iam/bedrock-invoke-policy.json)
-(replace `ACCOUNT_ID`): `bedrock:InvokeModel` on the inference profile, plus
-on the `anthropic.claude-opus-5-5` foundation model *only when reached
-through that profile* (`bedrock:InferenceProfileArn` condition). The
-Converse API is authorized by `bedrock:InvokeModel`; no streaming, no
-`bedrock:*`. The last statement (`GetInferenceProfile`,
+for the default model, and [`bedrock-invoke-policy-opus-5-5.json`](deploy/iam/bedrock-invoke-policy-opus-5-5.json)
+for optional Opus (replace `ACCOUNT_ID`). For any other model, generate it:
+
+```
+python scripts/render_bedrock_iam_policy.py --account-id 123456789012 --model-id us.anthropic.claude-sonnet-5-5
+```
+
+Each policy grants `bedrock:InvokeModel` on the inference profile, and on that
+model's foundation model *only when reached through that profile*
+(`bedrock:InferenceProfileArn` condition). Converse is authorized by
+`bedrock:InvokeModel`. The policy has no streaming, no `bedrock:*`, no
+wildcard models and no Marketplace actions; a test checks the committed files
+against the generator. The last statement (`GetInferenceProfile`,
 `GetFoundationModelAvailability`) is optional and only used by the free
 preflight. Model access must also be enabled for the account (Bedrock
 console → Model catalog; Anthropic models need the one-time use-case form).
@@ -680,23 +707,25 @@ category. The investigation fails closed: nothing is saved, the API returns
 approval — still only a reviewer can turn it into a case — and its id is
 returned with the error. Tools run only on a `tool_use` stop; a guardrail
 intervention, content filter or malformed tool call ends the run and is
-flagged in the narrative. Opus 5.5's signed reasoning blocks are passed
-back verbatim between tool turns, and no sampling parameters or forced
-`tool_choice` are sent (Opus 5.5 rejects both).
+flagged in the narrative. Signed reasoning blocks (Sonnet 5.5 and Opus 5.5
+think by default) are passed back verbatim between tool turns. No sampling
+parameters or forced `tool_choice` are sent; both models reject them.
 
 **1. Free preflight** (STS + Bedrock control plane, no inference):
 
 ```
 AWS_PROFILE=your-profile python scripts/bedrock_preflight.py
 # [ OK ] credentials valid (account ****1234, assumed-role)
-# [ OK ] inference profile us.anthropic.claude-opus-5-5 is ACTIVE in us-east-1 (...)
-# [ OK ] model access to anthropic.claude-opus-5-5 is enabled
+# [ OK ] inference profile us.anthropic.claude-sonnet-5-5 is ACTIVE in us-east-1 (...)
+# [ OK ] model access to anthropic.claude-sonnet-5-5 is enabled
 ```
 
 It prints exactly what is missing (credentials, region, profile, model
 access) and exits non-zero until everything is in place.
 
-**2. One live investigation (billable, ~$0.10–0.40, at most ~$2):**
+**2. One live investigation** (billable; the script prints its estimate for the
+configured model first: Sonnet 5.5 ~$0.11 typical, at most ~$1.06; Opus 5.5
+~$0.22, at most ~$2.11):
 
 ```
 AWS_PROFILE=your-profile python scripts/run_live_bedrock_investigation.py --confirm-billable

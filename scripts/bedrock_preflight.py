@@ -8,7 +8,7 @@ the account has model access to Claude (bedrock:GetFoundationModelAvailability).
 Prints exactly what is missing. Exit code 0 = ready, 1 = blocked.
 
 Configuration (all optional):
-    BANKSHIELD_BEDROCK_MODEL_ID   default us.anthropic.claude-opus-5-5
+    BANKSHIELD_BEDROCK_MODEL_ID   default us.anthropic.claude-sonnet-5-5
     BANKSHIELD_BEDROCK_REGION     else AWS_REGION / AWS_DEFAULT_REGION, else us-east-1
     AWS_PROFILE / AWS_* vars      standard boto3 credential sources
 

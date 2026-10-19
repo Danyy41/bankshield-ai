@@ -209,23 +209,26 @@ POLICY_DOCS_DIR = ROOT_DIR / "data" / "policy_docs"
 INVESTIGATION_MODEL_PATH = XGBOOST_WITH_GRAPH_MODEL_PATH
 INVESTIGATION_FEATURE_COLUMNS = FEATURE_COLUMNS_WITH_GRAPH
 
-# Bedrock / Claude configuration. Claude Opus 5.5 is served on Bedrock only
-# through cross-region inference profiles (`<geo>.anthropic.claude-opus-5-5`,
-# geo = us | eu | jp | au, or `global.` -- no ARN-versioned base model ID),
-# so the default is the US geographic profile: requests stay inside US
-# regions, which suits a bank's data-residency posture better than the
-# `global.` profile. Override per deployment without a code change:
-#   BANKSHIELD_BEDROCK_MODEL_ID  e.g. eu.anthropic.claude-opus-5-5 (with an EU region)
+# Bedrock / Claude configuration. The model is always called through a
+# cross-region inference profile (`<geo>.anthropic.<model>`, geo = us | eu |
+# jp | au, or `global.`). The default is Claude Sonnet 5.5 on the US
+# geographic profile: requests stay inside US regions, which suits a bank's
+# data-residency posture better than `global.`. Any profile the account can
+# invoke works without a code change:
+#   BANKSHIELD_BEDROCK_MODEL_ID  e.g. us.anthropic.claude-opus-5-5 (optional,
+#                                where the account has access), or the
+#                                ARN-versioned us.anthropic.claude-sonnet-4-5-20250929-v1:0
 #   BANKSHIELD_BEDROCK_REGION    else AWS_REGION / AWS_DEFAULT_REGION, else us-east-1
 # Credentials are never configured here: boto3's standard provider chain
 # (env vars, shared profile / SSO, container or instance role) supplies them.
 BEDROCK_MODEL_ID_ENV_VAR = "BANKSHIELD_BEDROCK_MODEL_ID"
 BEDROCK_REGION_ENV_VAR = "BANKSHIELD_BEDROCK_REGION"
-BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-opus-5-5"
+BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-sonnet-5-5"
+BEDROCK_MODEL_ID_OPUS = "us.anthropic.claude-opus-5-5"
 BEDROCK_REGION_DEFAULT = "us-east-1"
 
-# Per-turn output cap. Opus 5.5 always thinks (adaptively), and thinking
-# counts toward this, so leave headroom above the ~1-2K-token narrative.
+# Per-turn output cap. Sonnet 5.5 and Opus 5.5 think adaptively by default,
+# and thinking counts toward this, so leave headroom above the ~1-2K-token narrative.
 BEDROCK_MAX_TOKENS = 8192
 
 # botocore transport settings. "adaptive" retry mode backs off on
@@ -240,13 +243,16 @@ BEDROCK_RETRY_MODE = "adaptive"
 # Rough list-price token costs (USD per 1,000 tokens) used only for the
 # offline cost estimator in the evaluation harness -- not billing-accurate,
 # a planning estimate. Keyed by substring match against the model id, first
-# match wins (so the more specific "claude-opus-5-5" precedes "claude-opus-5").
-# Opus 5.5 is $4 / $20 per MTok; geographic (us./eu./...) and in-region
-# endpoints add ~10% over global., which this estimate ignores.
+# match wins (so the more specific "-5-5" keys precede their "-5" siblings).
+# List prices per MTok: Opus 5.5 $4/$20, Sonnet 5.5 and Sonnet 5 $2/$10,
+# Sonnet 4.5 $3/$15. Geographic (us./eu./...) and in-region endpoints can
+# add ~10% over global., which this estimate ignores.
 BEDROCK_PRICE_PER_1K_TOKENS = {
     "claude-opus-5-5": {"input": 0.004, "output": 0.020},
     "claude-opus-5": {"input": 0.005, "output": 0.025},
-    "claude-sonnet-5": {"input": 0.003, "output": 0.015},
+    "claude-sonnet-5-5": {"input": 0.002, "output": 0.010},
+    "claude-sonnet-5": {"input": 0.002, "output": 0.010},
+    "claude-sonnet-4-5": {"input": 0.003, "output": 0.015},
     "claude-haiku-4-5": {"input": 0.001, "output": 0.005},
 }
 

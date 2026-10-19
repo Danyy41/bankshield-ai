@@ -46,8 +46,8 @@ class ToolUseBlock:
 class OpaqueBlock:
     """A Converse content block the agent doesn't interpret but must send
     back unchanged on the next turn -- in practice `reasoningContent`
-    (Claude's thinking, signed and tied to this conversation; Opus 5.5
-    always thinks, and dropping or editing these between tool-use turns
+    (Claude's thinking, signed and tied to this conversation; Sonnet 5.5
+    and Opus 5.5 think by default, and dropping or editing these between tool-use turns
     invalidates the conversation)."""
 
     raw: dict[str, Any]
@@ -224,7 +224,7 @@ class BedrockClaudeClient(LLMClient):
     no network call; the test suite stubs `converse` (no AWS in CI).
 
     No sampling parameters (temperature/top_p) and no forced tool_choice
-    are sent: Opus 5.5 rejects both with a 400.
+    are sent: Sonnet 5.5 and Opus 5.5 reject both with a 400.
     """
 
     def __init__(

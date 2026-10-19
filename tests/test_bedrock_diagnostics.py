@@ -199,6 +199,8 @@ MARKETPLACE = (
          "with an explicit deny in a service control policy",
          BUCKET_ACCOUNT, "scp", "bedrock:InvokeModel", "foundation-model"),
         ("You don't have access to the model with the specified model ID.", BUCKET_ACCOUNT, "model_access", None, None),
+        ("anthropic.claude-opus-5-5 is not available for this account.", BUCKET_ACCOUNT, "model_not_offered",
+         None, None),
         ("Model use case details have not been submitted for this account.", BUCKET_ACCOUNT, "use_case_form", None, None),
         (f"User: {USER} is not authorized to perform: kms:Decrypt on resource: "
          f"arn:aws:kms:us-east-1:{ACCOUNT}:key/k because no identity-based policy allows the kms:Decrypt action",

@@ -63,7 +63,7 @@ def _error_code(exc: Exception) -> str:
 
 
 def _base_model_id(model_id: str) -> str:
-    """us.anthropic.claude-opus-5-5 -> anthropic.claude-opus-5-5"""
+    """us.anthropic.claude-sonnet-5-5 -> anthropic.claude-sonnet-5-5"""
     head, _, rest = model_id.partition(".")
     return rest if head in {"us", "eu", "jp", "au", "apac", "global"} and rest else model_id
 
@@ -119,7 +119,7 @@ def run_preflight(client_factory: Callable[..., Any] | None = None) -> Preflight
             report.blockers.append(
                 f"Inference profile {model_id} does not exist in {region}. Use a region that serves it "
                 "(US profile: us-east-1, us-east-2, us-west-2) or set BANKSHIELD_BEDROCK_MODEL_ID to the "
-                "profile for your geography (eu./jp./au./global.anthropic.claude-opus-5-5)."
+                "profile for your geography (eu./jp./au./global.<model>)."
             )
         else:
             report.blockers.append(f"Bedrock control plane unreachable in {region} ({code}).")
@@ -158,6 +158,61 @@ def run_preflight(client_factory: Callable[..., Any] | None = None) -> Preflight
         "deploy/iam/bedrock-invoke-policy.json."
     )
     return report
+
+
+# --- cost ----------------------------------------------------------------------------
+
+# One investigation: typically ~5 turns whose prompts grow to a few thousand
+# tokens each (~30K input, ~5K output in total). Worst case: all 8 turns,
+# ~25K input each, every turn at the output cap.
+TYPICAL_RUN_TOKENS = (30_000, 5_000)
+
+
+def estimate_run_cost(model_id: str) -> tuple[float, float]:
+    """(typical, worst-case) USD for one live investigation on `model_id`,
+    from config.BEDROCK_PRICE_PER_1K_TOKENS list prices."""
+    from bankshield import config
+    from bankshield.investigation.agent import AgentRunConfig, _estimate_cost_usd
+
+    turns = AgentRunConfig().max_turns
+    typical = _estimate_cost_usd(model_id, *TYPICAL_RUN_TOKENS)
+    worst = _estimate_cost_usd(model_id, turns * 25_000, turns * config.BEDROCK_MAX_TOKENS)
+    return typical, worst
+
+
+# --- least-privilege IAM policy ----------------------------------------------------
+
+
+def invoke_policy(model_ids: list[str], account_id: str = "ACCOUNT_ID", region: str = "us-east-1") -> dict:
+    """The minimum identity policy to run BankShield on the given inference
+    profiles: bedrock:InvokeModel (which authorizes Converse) on each
+    profile, and on its foundation model only when reached through that
+    profile (bedrock:InferenceProfileArn). Nothing else -- no streaming, no
+    bedrock:*, no Marketplace actions, no wildcard models."""
+    statements: list[dict] = []
+    for model_id in model_ids:
+        profile_arn = f"arn:aws:bedrock:{region}:{account_id}:inference-profile/{model_id}"
+        sid = re.sub(r"[^A-Za-z0-9]", "", _base_model_id(model_id).title())
+        statements.append({
+            "Sid": f"Invoke{sid}Profile",
+            "Effect": "Allow",
+            "Action": "bedrock:InvokeModel",
+            "Resource": profile_arn,
+        })
+        statements.append({
+            "Sid": f"Invoke{sid}OnlyThroughProfile",
+            "Effect": "Allow",
+            "Action": "bedrock:InvokeModel",
+            "Resource": f"arn:aws:bedrock:*::foundation-model/{_base_model_id(model_id)}",
+            "Condition": {"StringEquals": {"bedrock:InferenceProfileArn": profile_arn}},
+        })
+    statements.append({
+        "Sid": "OptionalFreePreflightChecks",
+        "Effect": "Allow",
+        "Action": ["bedrock:GetInferenceProfile", "bedrock:GetFoundationModelAvailability"],
+        "Resource": "*",
+    })
+    return {"Version": "2012-10-17", "Statement": statements}
 
 
 # --- live-run verification ------------------------------------------------------

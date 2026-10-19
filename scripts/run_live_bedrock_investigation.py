@@ -2,8 +2,9 @@
 every check, save a sanitized copy as the README's live example.
 
 THIS MAKES BILLABLE BEDROCK CALLS. It refuses to run without
---confirm-billable. One investigation is 3-8 model turns; with Claude
-Opus 5.5 that is typically ~$0.10-0.40 and at most ~$2 (8 turns at the
+--confirm-billable, and prints the estimated cost for the configured model
+either way. One investigation is 3-8 model turns; on the default Claude
+Sonnet 5.5 that is typically ~$0.11 and at most ~$1.06 (8 turns at the
 8,192-token output cap).
 
 What it does:
@@ -42,9 +43,14 @@ from bankshield.investigation import data_access  # noqa: E402
 from bankshield.investigation.agent import run_investigation  # noqa: E402
 from bankshield.investigation.approvals import get_approval_store  # noqa: E402
 from bankshield.investigation.bedrock_diagnostics import explain_denial  # noqa: E402
-from bankshield.investigation.bedrock_live import redact, run_preflight, verify_live_result  # noqa: E402
+from bankshield.investigation.bedrock_live import (  # noqa: E402
+    estimate_run_cost,
+    redact,
+    run_preflight,
+    verify_live_result,
+)
 from bankshield.investigation.case_store import get_case_store  # noqa: E402
-from bankshield.investigation.llm_client import BedrockClaudeClient, LLMServiceError  # noqa: E402
+from bankshield.investigation.llm_client import BedrockClaudeClient, LLMServiceError, bedrock_settings  # noqa: E402
 
 OUT_DIR = ROOT / "docs" / "examples"
 ANALYST, REVIEWER = "live.analyst", "live.reviewer"
@@ -100,6 +106,9 @@ def main() -> int:
     parser.add_argument("--confirm-billable", action="store_true", help="Acknowledge this makes paid Bedrock calls")
     parser.add_argument("--transaction-id")
     args = parser.parse_args()
+    model_id, _ = bedrock_settings()
+    typical, worst = estimate_run_cost(model_id)
+    print(f"Estimated cost on {model_id}: ~${typical:.2f} typical, at most ~${worst:.2f}")
     if not args.confirm_billable:
         print("Refusing to run: this makes billable Amazon Bedrock calls. Re-run with --confirm-billable.")
         return 2

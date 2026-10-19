@@ -106,6 +106,14 @@ _CAUSES: list[tuple[tuple[str, ...], Cause]] = [
         "use_case_form", "Anthropic's one-time use-case form hasn't been submitted for this account.",
         "Submit it in the Bedrock console (Model catalog > an Anthropic model > request access).",
     )),
+    (("is not available for this account",), Cause(
+        "model_not_offered",
+        "Bedrock doesn't offer this model to this account (even if IAM allows it and the agreement shows "
+        "AVAILABLE) -- an account-level availability restriction, not a permissions problem.",
+        "Use a model the account can invoke (set BANKSHIELD_BEDROCK_MODEL_ID; check with "
+        "scripts/bedrock_model_access_test.py), or ask AWS (account team / Support, citing the request "
+        "ID) to enable this model for the account. Changing IAM won't help.",
+    )),
     (("don't have access to the model", "do not have access to the model", "not have access to the model"), Cause(
         "model_access", "Model access for this model isn't granted/accepted in this account and region.",
         "Enable access in the Bedrock console (Model catalog) in the source region, and accept the "
@@ -350,7 +358,7 @@ def explain_denial(message: str) -> DenialExplanation:
         bucket, cause = BUCKET_MARKETPLACE, _cause("marketplace")
     elif action and not action.startswith("bedrock:"):
         bucket = BUCKET_OTHER  # e.g. kms:Decrypt, sts:..., another service's permission
-    elif cause.category in {"scp", "rcp", "model_access", "use_case_form"}:
+    elif cause.category in {"scp", "rcp", "model_access", "model_not_offered", "use_case_form"}:
         bucket = BUCKET_ACCOUNT
     elif cause.category in {"identity_no_allow", "identity_explicit_deny", "permissions_boundary", "session_policy"}:
         bucket = BUCKET_IAM
