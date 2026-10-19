@@ -970,6 +970,133 @@ CLI (TypeScript SDK).
   fixtures live outside it (Phase 5), but an MCP client's model should
   still treat tool results as data, not instructions.
 
+## A2A multi-agent architecture
+
+Two agents built on the official A2A Python SDK (`a2a-sdk`) and served over
+the [Agent2Agent protocol](https://a2a-protocol.org) (JSON-RPC binding,
+A2A 1.0): a **Triage Agent** that scores a batch of alerts and an
+**Investigation Agent** that investigates one alert. The triage agent is an
+A2A *client* of the investigation agent — it discovers it through its agent
+card and calls it with `SendMessage`, exactly as any external A2A client
+would.
+
+```mermaid
+flowchart LR
+    caller["A2A client<br/>(analyst tool, orchestrator,<br/>another agent)"]
+    reviewer["Human reviewer<br/>(named)"]
+
+    subgraph api["BankShield API process (uvicorn, 1 worker)"]
+        triage["Triage Agent<br/>/a2a/triage"]
+        investigator["Investigation Agent<br/>/a2a/investigator"]
+        tools["Read-only tools<br/>tools.execute_tool<br/>+ Phase 5 validators"]
+        loop["run_investigation<br/>(existing agent loop,<br/>guardrails, citations)"]
+        gate["ApprovalStore<br/>(pending approvals)"]
+        cases["CaseStore"]
+        decision["POST /approvals/{id}/decision"]
+    end
+
+    caller -- "A2A SendMessage<br/>{transaction_ids}" --> triage
+    triage -- "get_risk_score" --> tools
+    triage -- "A2A SendMessage<br/>{transaction_id}<br/>(Tier 1/2 only)" --> investigator
+    investigator --> loop
+    loop -- "read-only tool calls" --> tools
+    loop -- "create_case → proposal only" --> gate
+    investigator -. "summary + pending approval IDs" .-> triage
+    triage -. "triage report" .-> caller
+    reviewer -- "approve/reject,<br/>reviewer required" --> decision
+    decision --> gate
+    gate -- "on approval only" --> cases
+```
+
+| Agent | Endpoint / agent card | Input (one JSON data part) | Does |
+|---|---|---|---|
+| Triage | `POST /a2a/triage`, `GET /a2a/triage/.well-known/agent-card.json` | `{"transaction_ids": [...]}` (1–20) | Scores each alert with `get_risk_score`, applies the POL-AML-001 §2.1 tiers, escalates Tier 1/2 to the Investigation Agent over A2A, records Tier 3 as monitored, returns a triage report |
+| Investigation | `POST /a2a/investigator`, `GET /a2a/investigator/.well-known/agent-card.json` | `{"transaction_id": "..."}` | Runs the existing investigation loop (`run_investigation`) and returns its disposition, verified citations, tools used, and any **pending** case proposals |
+
+**Reuse, not rewrite.** The investigation agent wraps
+`investigation.agent.run_investigation` unchanged, so it keeps the
+existing guardrails (`safe_execute_tool`, retrieval-scoped citations, the
+Phase 5 validators). The triage agent calls the same `tools.execute_tool`
+with a read-only allowlist. Both agents are mounted on the existing FastAPI
+app (`src/bankshield/agents/server.py`), and the offline/Bedrock switch
+(`BANKSHIELD_LLM_MODE`) applies to the investigation agent too.
+
+### The human-approval gate holds
+
+- **Agents can propose, never approve.** The investigation agent's only
+  consequential path is the existing `create_case` tool, which files a
+  `PendingApproval` and nothing else. Neither agent has any code path to
+  `ApprovalStore.decide` or `CaseStore`; a case exists only after a named
+  reviewer calls `POST /approvals/{approval_id}/decision`. Reports carry
+  `human_action_required` and the pending approval IDs, and the full
+  investigation is viewable at `GET /investigations/{transaction_id}`.
+- **Same process, same queue.** The agents run inside the API process, so a
+  proposal lands in the exact `ApprovalStore` the decision endpoint reads
+  (the stores are in-memory — see Limitations).
+- **Inbound A2A messages are untrusted input.** Each agent accepts exactly
+  one user-role JSON data part matching a strict schema (`extra="forbid"`,
+  bounded lengths, batch ≤ 20). Free-text parts, extra parts, and smuggled
+  fields such as `approved` / `reviewer` / `auto_approve` are rejected
+  (`TASK_STATE_REJECTED`) before any agent logic runs, so an instruction in
+  a message can never reach the agents as anything but a validated ID.
+- **Agents treat each other's output as data.** The triage agent validates
+  every investigation reply against a strict schema and drops anything of
+  an unexpected shape.
+- **Errors fail closed.** Unknown IDs fail the task with a not-found
+  message; unexpected exceptions are reduced to a generic message by
+  `guardrails.sanitize_error_response`.
+
+### Try it
+
+```
+uvicorn bankshield.api.app:app --app-dir src     # or the Docker image
+
+curl http://localhost:8000/a2a/triage/.well-known/agent-card.json
+
+curl -X POST http://localhost:8000/a2a/triage \
+  -H 'Content-Type: application/json' -H 'A2A-Version: 1.0' \
+  -d '{"jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+       "params": {"message": {"messageId": "m1", "role": "ROLE_USER",
+         "parts": [{"data": {"transaction_ids": ["849e00a5ee8c483ba5751e12007432b0"]}}]}}}'
+# -> a completed task whose artifact is the triage report; any
+#    pending_approval_ids still need POST /approvals/{id}/decision.
+```
+
+The agents advertise, and the triage agent dials, `BANKSHIELD_A2A_BASE_URL`
+(default `http://127.0.0.1:8000`); set it to the public URL when deploying
+behind a proxy or on another port.
+
+### Tests
+
+`tests/test_a2a_agents.py` drives both agents with the official A2A SDK
+client: agent-card discovery; a Tier 1 investigation that proposes but
+never creates a case; a Tier 3 investigation that proposes nothing; a
+triage batch that escalates Tier 1, monitors Tier 3, and reports a missing
+ID; ten malformed/adversarial messages rejected with the gate untouched;
+sanitized internal errors; a tampered investigation reply that triage
+refuses; an instrumented run proving the multi-agent flow never calls
+`ApprovalStore.decide` or `CaseStore.create_from_approval` (and that the
+human HTTP decision then does); and an end-to-end run against a real
+uvicorn server where the two agents talk over the network. The Docker
+smoke test (`scripts/smoke_test_api.py`) repeats the triage → investigation
+→ human-approval flow over raw JSON-RPC against the built image.
+
+### Limitations
+
+- **No authentication on A2A or approvals.** The agent cards declare no
+  security scheme and the approval endpoint trusts the `reviewer` name it
+  is given. The gate guarantees an explicit human *decision step* that no
+  agent takes — not that the caller is an authorized human. Before real
+  use: authenticate A2A callers (A2A security schemes) and require an
+  authenticated reviewer identity on `/approvals/{id}/decision`.
+- **In-memory, single-process state.** Approvals, cases, and A2A tasks live
+  in process memory: they reset on restart, and the agents must share the
+  API process. A durable shared store would let the agents run as separate
+  services and the API scale beyond one worker.
+- **Synchronous calls only.** No streaming or push notifications; the
+  triage agent investigates escalated alerts one at a time (fine for the
+  1–20 alert batches it accepts).
+
 ## Continuous integration
 
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every
@@ -983,7 +1110,8 @@ The MCP server is checked by its pytest suite and by
 `scripts/check_mcp_inspector.sh` (MCP Inspector CLI over stdio).
 A parallel `docker` job builds the image, starts it with a read-only root
 filesystem and no capabilities, waits for its health check, and runs
-`scripts/smoke_test_api.py` against it.
+`scripts/smoke_test_api.py` against it (HTTP API, approval gate, and the A2A
+triage → investigation flow over raw JSON-RPC).
 Everything runs offline — no AWS credentials. The JUnit results,
 regenerated reports/metrics, and the resolved dependency versions
 (`pip-freeze.txt`) are uploaded as a build artifact.

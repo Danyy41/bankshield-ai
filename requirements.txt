@@ -23,3 +23,6 @@ PyYAML==6.0.3
 
 # MCP server for the read-only investigation tools (src/bankshield/mcp_server.py)
 mcp==2.3.0
+
+# A2A triage + investigation agents (src/bankshield/agents/)
+a2a-sdk[http-server]==1.2.2

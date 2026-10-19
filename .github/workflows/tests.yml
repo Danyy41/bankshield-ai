@@ -11,7 +11,8 @@ name: Tests
 # The MCP server is exercised by its pytest suite (official Python SDK client,
 # in-process and over stdio) and by an independent client, the MCP Inspector
 # CLI. The `docker` job builds the production image in parallel, runs it
-# hardened (read-only rootfs, no capabilities), and smoke-tests the live API.
+# hardened (read-only rootfs, no capabilities), and smoke-tests the live API,
+# including the A2A triage -> investigation flow and the human-approval gate.
 
 on:
   push:
