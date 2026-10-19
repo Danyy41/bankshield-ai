@@ -2,19 +2,19 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "InvokeClaudeOpus55ViaUSInferenceProfile",
+      "Sid": "InvokeAnthropicClaudeSonnet55Profile",
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
-      "Resource": "arn:aws:bedrock:us-east-1:ACCOUNT_ID:inference-profile/us.anthropic.claude-opus-5-5"
+      "Resource": "arn:aws:bedrock:us-east-1:ACCOUNT_ID:inference-profile/us.anthropic.claude-sonnet-5-5"
     },
     {
-      "Sid": "InvokeTheFoundationModelOnlyThroughThatProfile",
+      "Sid": "InvokeAnthropicClaudeSonnet55OnlyThroughProfile",
       "Effect": "Allow",
       "Action": "bedrock:InvokeModel",
-      "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5",
+      "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5-5",
       "Condition": {
         "StringEquals": {
-          "bedrock:InferenceProfileArn": "arn:aws:bedrock:us-east-1:ACCOUNT_ID:inference-profile/us.anthropic.claude-opus-5-5"
+          "bedrock:InferenceProfileArn": "arn:aws:bedrock:us-east-1:ACCOUNT_ID:inference-profile/us.anthropic.claude-sonnet-5-5"
         }
       }
     },

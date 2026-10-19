@@ -3,10 +3,142 @@
 [![Tests](https://github.com/Danyy41/bankshield-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/Danyy41/bankshield-ai/actions/workflows/tests.yml)
 
 BankShield AI is a portfolio project demonstrating production-style AI engineering
-across financial crime detection, cybersecurity, and applied ML. It is being built
-in phases, each one a complete, working slice rather than a stub.
+across financial crime detection, cybersecurity, and applied ML: an
+**offline-capable AI fraud-investigation system** in which ML models score
+transactions, an agent investigates alerts with controlled tools and cited
+policy, and every consequential action waits for a human reviewer.
 
-**This repository implements Phases 1–5, plus CI, reproducible builds, Docker, an MCP server, A2A agents, and authentication with durable state.**
+**Status: complete.** It was built in phases, each a working slice rather
+than a stub: the ML pipeline, the agentic investigation workflow, a red-team
+suite, CI, reproducible builds, Docker, an MCP server, A2A agents, and
+authentication with durable state. Everything runs offline by default.
+Amazon Bedrock is an optional integration that is disabled by default. **Live
+Bedrock inference has not succeeded for this project**; see
+[Amazon Bedrock status](#amazon-bedrock-status).
+
+## Contents
+
+- [At a glance](#at-a-glance): architecture, quick start, verification results, limitations
+- [Phase 1: fraud-detection ML baseline](#phase-1-fraud-detection-ml-baseline) ·
+  [Phase 2: cyber telemetry](#phase-2-cyber-authentication-telemetry) ·
+  [Phase 3: graph intelligence](#phase-3-graph-based-financial-crime-intelligence)
+- [Phase 4: AI-assisted investigation](#phase-4-ai-assisted-financial-crime-investigation)
+  (incl. [optional Bedrock integration](#running-against-real-bedrock))
+- [Phase 5: AI security red team](#phase-5--ai-security-red-team)
+- [Docker](#docker) · [MCP server](#mcp-server) · [A2A agents](#a2a-multi-agent-architecture) ·
+  [Security](#security-authentication-authorization-and-durable-state) ·
+  [CI](#continuous-integration) · [Reproducibility](#reproducibility)
+
+## At a glance
+
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph ML["ML pipeline (Phases 1-3, offline, seeded)"]
+        D[Synthetic transactions,<br/>logins, graph entities] --> F[Features: transaction +<br/>cyber + graph]
+        F --> M[XGBoost risk model]
+    end
+    subgraph API["FastAPI service (auth + RBAC)"]
+        R[Risk scoring] --> AG[Investigation agent<br/>tool-use loop]
+        AG -->|read-only tools| T[get_risk_score · get_auth_history<br/>get_graph_neighbors · search_policy]
+        AG -->|create_case| P[(Pending approval)]
+        P -->|reviewer decides,<br/>four-eyes rule| C[(Case)]
+        G[Guardrails: input validation,<br/>tool allowlist, citation filter] -.-> AG
+    end
+    M --> R
+    LLM{{LLM client<br/>offline scripted - default<br/>Bedrock Converse - optional}} --> AG
+    UI[Static frontend] --> API
+    MCP[MCP server<br/>read-only tools] --> T
+    A2A[A2A agents<br/>triage to investigator] --> AG
+    DB[(SQLite: users, approvals,<br/>cases, audit log)] --- API
+```
+
+The agent can read data and *propose* a case, but only an authenticated
+reviewer who isn't the requester can approve one. This is enforced in code
+and the database, not just in the prompt.
+
+### Quick start (local, offline)
+
+Requires Python 3.11.
+
+```
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt -c requirements-lock.txt
+python scripts/run_all.py                                  # data, models, reports (deterministic)
+
+export PYTHONPATH=src BANKSHIELD_JWT_SECRET="$(openssl rand -base64 48)"
+python -m bankshield.auth.cli create-user alice.analyst --role analyst    # prompts for a password
+python -m bankshield.auth.cli create-user rita.reviewer --role reviewer
+uvicorn bankshield.api.app:app --port 8000                 # offline LLM mode by default
+
+python -m http.server 8080 --directory frontend            # UI at http://localhost:8080
+```
+
+Or with Docker (hardened, state on a volume): see [Docker](#docker).
+
+### Verification results
+
+All checks run offline, with no AWS credentials, on every push
+([CI workflow](.github/workflows/tests.yml)):
+
+| Check | Result |
+|---|---|
+| `pytest` (unit, API, auth/RBAC, persistence, MCP, A2A, Bedrock client with stubbed AWS) | **315 passed** |
+| Red-team suite (`scripts/run_redteam.py`, 30 synthetic attacks, 8 categories) | **30/30 blocked** |
+| Reproducibility (`scripts/check_reproducibility.py`) | **7/7 metrics files match** the committed ones |
+| Docker smoke test (`scripts/docker_smoke.sh`: hardened container, auth, RBAC, approval gate, A2A, restart persistence) | **passed** |
+| MCP Inspector CLI against the MCP server | **passed** (CI) |
+
+The final model (transaction + cyber + graph features) reaches **ROC-AUC 0.937 /
+PR-AUC 0.572** on a 10,000-transaction test set with 1.38% fraud
+([Phase 3](#results-does-graph-intelligence-help-further)).
+
+### Amazon Bedrock status
+
+`BANKSHIELD_LLM_MODE=offline` is the default, and every result in this
+repository comes from the deterministic offline client. Bedrock
+(`BANKSHIELD_LLM_MODE=bedrock`, Converse API, model set by
+`BANKSHIELD_BEDROCK_MODEL_ID`) is an optional integration. Its client,
+error handling and diagnostics are covered by tests that stub AWS.
+
+What was verified against a real AWS account, using free and read-only
+calls only:
+- **Claude Opus 5.5** (`us.anthropic.claude-opus-5-5`): the inference profile
+  was found, model availability reported authorized, entitled and agreement
+  `AVAILABLE`, and the IAM simulation for the restricted app identity
+  returned `allowed` for the profile and all three regional models.
+- **Claude Sonnet 5.5** (`us.anthropic.claude-sonnet-5-5`, the configured
+  default): the inference profile is `ACTIVE`, routing to us-east-1,
+  us-east-2 and us-west-2. A least-privilege policy was applied, and the IAM
+  simulation returned `allowed` through the profile and `implicitDeny` for
+  direct calls, which shows the profile condition is enforced. The model
+  agreement was still `NOT_AVAILABLE`.
+
+**What did not succeed:** the live Converse call to Opus 5.5 was denied with
+`AccessDeniedException (HTTP 403): anthropic.claude-opus-5-5 is not
+available for this account`. That is an account-level model restriction,
+not an IAM or code issue. No live request was made to Sonnet 5.5, and the
+Bedrock experiments then ended. **No live Bedrock inference has succeeded,
+and no live investigation output is included or claimed.**
+
+### Limitations
+
+- **Synthetic data only.** All transactions, logins and graph entities are
+  generated. The models' metrics describe this simulation, not real-world
+  fraud.
+- **The offline LLM is scripted.** The offline client follows a
+  deterministic investigation script, so the Phase 4 evaluation and the
+  red-team suite measure the system's controls (tool gating, citation
+  filtering, approval enforcement), not a real model's reasoning. A
+  live-model evaluation and red-team run remain to be done.
+- **Security scope.** There's a local identity store with HS256 JWTs (no
+  IdP or MFA) and no single-token revocation. CORS is open and TLS must be
+  terminated in front of the app. SQLite allows a single writer, and A2A
+  task state is per-process, so production use would need PostgreSQL and
+  an IdP. See the per-section *Limitations* below.
+- **Not a production system.** It's a portfolio demonstration. It hasn't
+  been penetration-tested and isn't fit for real customer data as-is.
 
 ## Phase 1: fraud-detection ML baseline
 
@@ -603,7 +735,7 @@ environment variable, not a code change:
 | `BANKSHIELD_LLM_MODE` | Backend | Requires |
 |---|---|---|
 | `offline` (default) | `AutoFakeLLMClient` — deterministic, scripted | Nothing. Safe default for a public demo deployment. |
-| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API, Claude Opus 5.5 via the `us.anthropic.claude-opus-5-5` inference profile in `us-east-1` (override with `BANKSHIELD_BEDROCK_MODEL_ID` / `BANKSHIELD_BEDROCK_REGION` or `AWS_REGION`) | AWS credentials from the standard provider chain, Bedrock model access, and [`bedrock:InvokeModel`](deploy/iam/bedrock-invoke-policy.json) — see [Running against real Bedrock](#running-against-real-bedrock) |
+| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API, Claude Sonnet 5.5 via the `us.anthropic.claude-sonnet-5-5` inference profile in `us-east-1` (Opus 5.5 optional; override with `BANKSHIELD_BEDROCK_MODEL_ID` / `BANKSHIELD_BEDROCK_REGION` or `AWS_REGION`) | AWS credentials from the standard provider chain, Bedrock model access, and [`bedrock:InvokeModel`](deploy/iam/bedrock-invoke-policy.json) — see [Running against real Bedrock](#running-against-real-bedrock) |
 
 Leaving `BANKSHIELD_LLM_MODE` unset means the deployed API serves real
 requests end-to-end (transactions, risk scores, investigations, the
@@ -645,27 +777,50 @@ python scripts/13_evaluate_investigations.py --live --confirm-billable   # real 
 The same `BedrockClaudeClient` and agent loop, pointed at Amazon Bedrock.
 Offline stays the default; nothing below runs unless you opt in.
 
-**Model.** Claude Opus 5.5 is served on Bedrock only through cross-region
-inference profiles — there is no in-region `anthropic.claude-opus-5-5:0`
-base-model ID to call directly. The default, `us.anthropic.claude-opus-5-5`,
-keeps traffic inside US regions (us-east-1 / us-east-2 / us-west-2), which
-fits a bank's data-residency stance better than `global.` (which may route
-anywhere, at ~10% lower cost). For other geographies set
-`BANKSHIELD_BEDROCK_MODEL_ID` to `eu.`, `jp.` or `au.anthropic.claude-opus-5-5`
-and a matching region.
+**Model.** The default is **Claude Sonnet 5.5** through the
+`us.anthropic.claude-sonnet-5-5` cross-region inference profile. It keeps
+traffic inside US regions, which fits a bank's data-residency stance better
+than `global.` (which may route anywhere, at ~10% lower cost). The model is
+one setting, `BANKSHIELD_BEDROCK_MODEL_ID`; the Converse integration is the
+same for all of them:
+
+| `BANKSHIELD_BEDROCK_MODEL_ID` | Model | List price (in/out per MTok) |
+|---|---|---|
+| `us.anthropic.claude-sonnet-5-5` (default) | Claude Sonnet 5.5 | $2 / $10 |
+| `us.anthropic.claude-opus-5-5` (optional) | Claude Opus 5.5 | $4 / $20 |
+| `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (fallback) | $3 / $15 |
+
+Not every account can invoke every model. Bedrock can answer
+`AccessDeniedException: <model> is not available for this account` even when
+IAM allows the call and the model agreement shows `AVAILABLE`. That is an
+account-level restriction, not a permissions problem, so changing IAM doesn't
+fix it. To check whether the account can invoke a given model, set
+`BANKSHIELD_BEDROCK_MODEL_ID` to it and run
+`python scripts/bedrock_access_diagnose.py --reproduce-only --confirm-billable`
+(below). It sends one `maxTokens=1` request, which isn't billed if denied.
+For other geographies use the `eu.`, `jp.` or `au.` profile and a matching
+region.
 
 **Credentials.** Only boto3's standard provider chain: IAM Identity Center
 (`aws sso login --profile P` + `AWS_PROFILE=P`), an ECS task role or EC2
 instance profile, or environment keys for short-lived credentials. Nothing
-in the app accepts, stores or logs a key; Bedrock errors are logged by code
-only, since AWS error text can contain account IDs and ARNs.
+in the app accepts, stores or logs a key; Bedrock errors are logged with AWS's
+message sanitized (account IDs masked, session names hidden).
 
 **Minimum IAM** — [`deploy/iam/bedrock-invoke-policy.json`](deploy/iam/bedrock-invoke-policy.json)
-(replace `ACCOUNT_ID`): `bedrock:InvokeModel` on the inference profile, plus
-on the `anthropic.claude-opus-5-5` foundation model *only when reached
-through that profile* (`bedrock:InferenceProfileArn` condition). The
-Converse API is authorized by `bedrock:InvokeModel`; no streaming, no
-`bedrock:*`. The last statement (`GetInferenceProfile`,
+for the default model, and [`bedrock-invoke-policy-opus-5-5.json`](deploy/iam/bedrock-invoke-policy-opus-5-5.json)
+for optional Opus (replace `ACCOUNT_ID`). For any other model, generate it:
+
+```
+python scripts/render_bedrock_iam_policy.py --account-id 123456789012 --model-id us.anthropic.claude-sonnet-5-5
+```
+
+Each policy grants `bedrock:InvokeModel` on the inference profile, and on that
+model's foundation model *only when reached through that profile*
+(`bedrock:InferenceProfileArn` condition). Converse is authorized by
+`bedrock:InvokeModel`. The policy has no streaming, no `bedrock:*`, no
+wildcard models and no Marketplace actions; a test checks the committed files
+against the generator. The last statement (`GetInferenceProfile`,
 `GetFoundationModelAvailability`) is optional and only used by the free
 preflight. Model access must also be enabled for the account (Bedrock
 console → Model catalog; Anthropic models need the one-time use-case form).
@@ -680,23 +835,25 @@ category. The investigation fails closed: nothing is saved, the API returns
 approval — still only a reviewer can turn it into a case — and its id is
 returned with the error. Tools run only on a `tool_use` stop; a guardrail
 intervention, content filter or malformed tool call ends the run and is
-flagged in the narrative. Opus 5.5's signed reasoning blocks are passed
-back verbatim between tool turns, and no sampling parameters or forced
-`tool_choice` are sent (Opus 5.5 rejects both).
+flagged in the narrative. Signed reasoning blocks (Sonnet 5.5 and Opus 5.5
+think by default) are passed back verbatim between tool turns. No sampling
+parameters or forced `tool_choice` are sent; both models reject them.
 
 **1. Free preflight** (STS + Bedrock control plane, no inference):
 
 ```
 AWS_PROFILE=your-profile python scripts/bedrock_preflight.py
 # [ OK ] credentials valid (account ****1234, assumed-role)
-# [ OK ] inference profile us.anthropic.claude-opus-5-5 is ACTIVE in us-east-1 (...)
-# [ OK ] model access to anthropic.claude-opus-5-5 is enabled
+# [ OK ] inference profile us.anthropic.claude-sonnet-5-5 is ACTIVE in us-east-1 (...)
+# [ OK ] model access to anthropic.claude-sonnet-5-5 is enabled
 ```
 
 It prints exactly what is missing (credentials, region, profile, model
 access) and exits non-zero until everything is in place.
 
-**2. One live investigation (billable, ~$0.10–0.40, at most ~$2):**
+**2. One live investigation** (billable; the script prints its estimate for the
+configured model first: Sonnet 5.5 ~$0.11 typical, at most ~$1.06; Opus 5.5
+~$0.22, at most ~$2.11):
 
 ```
 AWS_PROFILE=your-profile python scripts/run_live_bedrock_investigation.py --confirm-billable
@@ -711,10 +868,42 @@ if every check passes does it save a sanitized copy (ARNs, account IDs,
 access keys and request/approval IDs redacted) to
 `docs/examples/live_bedrock_investigation.{md,json}`.
 
-**Live-run status: pending.** No live investigation has been recorded yet:
-the development environment for this repo has no valid AWS credentials,
-and no example output is fabricated. The example above will appear here
-once the script has been run in an AWS account with access.
+**If the call is denied (`AccessDeniedException`)** even though the IAM
+simulator says "allowed", find out why with free, read-only calls:
+
+```
+AWS_PROFILE=your-profile python scripts/bedrock_access_diagnose.py
+```
+
+It pulls the denied call from CloudTrail (error code, AWS's message, request
+ID, region) and names the cause from that message: a service control,
+resource control, session or VPC-endpoint policy, a permissions boundary, a
+statement that didn't match, or a Bedrock-side gate (model access/agreement,
+Marketplace subscription, the Anthropic use-case form). It also re-runs the
+IAM simulation with the context Bedrock actually sends: the foundation model
+in *every* region the profile routes to, with `bedrock:InferenceProfileArn` and
+`aws:RequestedRegion`, plus the SCP verdict. A plain simulation without that
+context can't see a region-restricting SCP or a condition mismatch. Account
+IDs are masked to their last four digits and SSO session names hidden.
+`--reproduce-only --confirm-billable` skips those checks (for a restricted
+user that can't read IAM or CloudTrail) and sends one controlled Converse
+request (`maxTokens=1`, a single attempt with no retries; not billed if
+denied). It prints AWS's own error, sanitized: code, HTTP status, request
+ID, the message, and the denied action and resource. It then says whether
+the denial is missing Marketplace subscription permissions, an IAM denial on
+the inference profile or foundation model, a model-access or account-level
+restriction, or another service's authorization. The live-investigation
+script prints the same details when a call is denied. API and A2A callers
+still only get the generic message.
+There is no separate IAM action for Converse: it is authorized as
+`bedrock:InvokeModel`.
+
+**Live-run status: not achieved.** The live call was denied by an
+account-level model restriction (`<model> is not available for this account`)
+after IAM and model availability had been verified. No live investigation
+has been recorded and none is claimed; see
+[Amazon Bedrock status](#amazon-bedrock-status). The scripts above remain for
+anyone running BankShield in an account with model access.
 
 ### Evaluation
 
@@ -1384,14 +1573,15 @@ and across processes (only Phase 4 wall-clock latency varies).
 
 ## Roadmap
 
-Phases 1 through 5 (this repo) are the classical ML + cyber-telemetry +
-graph-intelligence foundation, the AI-assisted investigation layer on top
-of it, and a defensive red-team evaluation of that layer. Possible next
-steps: a live-model (Bedrock) red-team run to complement the offline suite
-above. The durable approval/case store and the authentication layer are
-now in place (see Security); next would be a managed identity provider
-(Cognito/OIDC), PostgreSQL with Alembic migrations, and a shared A2A task
-store so the agents can run as separate services.
+The project is complete as an offline system. Natural next steps:
+
+- **Live-model evaluation:** run the Phase 4 evaluation and the red-team
+  suite against a real model in an AWS account where the model is
+  available (the Bedrock integration and its diagnostics are ready).
+- **Production hardening:** a managed identity provider with MFA
+  (Cognito/OIDC), PostgreSQL with Alembic migrations, a shared A2A task
+  store so the agents can run as separate services, restricted CORS, and
+  token revocation.
 
 ## License
 

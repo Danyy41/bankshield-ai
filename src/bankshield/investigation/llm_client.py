@@ -46,8 +46,8 @@ class ToolUseBlock:
 class OpaqueBlock:
     """A Converse content block the agent doesn't interpret but must send
     back unchanged on the next turn -- in practice `reasoningContent`
-    (Claude's thinking, signed and tied to this conversation; Opus 5.5
-    always thinks, and dropping or editing these between tool-use turns
+    (Claude's thinking, signed and tied to this conversation; Sonnet 5.5
+    and Opus 5.5 think by default, and dropping or editing these between tool-use turns
     invalidates the conversation)."""
 
     raw: dict[str, Any]
@@ -117,11 +117,28 @@ class LLMServiceError(RuntimeError):
     `config.BEDROCK_MAX_ATTEMPTS` times by the time this is raised).
     """
 
-    def __init__(self, kind: str, message: str, *, retryable: bool, aws_code: str | None = None):
+    def __init__(
+        self,
+        kind: str,
+        message: str,
+        *,
+        retryable: bool,
+        aws_code: str | None = None,
+        request_id: str | None = None,
+        aws_message: str | None = None,
+    ):
         super().__init__(message)
         self.kind = kind
         self.retryable = retryable
         self.aws_code = aws_code
+        # AWS request ID: not sensitive, and what AWS Support / CloudTrail
+        # lookups need to find the exact failed call.
+        self.request_id = request_id
+        # AWS's own explanation (it names the denying policy type, action and
+        # resource), sanitized: account IDs masked, session names hidden. For
+        # operators and local diagnostics only -- never part of str(exc), so
+        # it doesn't reach API or A2A callers.
+        self.aws_message = aws_message
         # Set by agent.run_investigation: case proposals filed earlier in the
         # aborted run (still pending human approval).
         self.pending_approval_ids: list[str] = []
@@ -156,7 +173,13 @@ def _translate_bedrock_error(exc: Exception) -> LLMServiceError:
         kind, retryable, message = _BEDROCK_ERRORS.get(
             code, ("model_error", False, "The model service returned an unexpected error.")
         )
-        return LLMServiceError(kind, message, retryable=retryable, aws_code=code)
+        from bankshield.investigation.bedrock_diagnostics import sanitize
+
+        request_id = exc.response.get("ResponseMetadata", {}).get("RequestId")
+        aws_message = sanitize(exc.response.get("Error", {}).get("Message", "")) or None
+        return LLMServiceError(
+            kind, message, retryable=retryable, aws_code=code, request_id=request_id, aws_message=aws_message
+        )
     if isinstance(exc, (bce.ReadTimeoutError, bce.ConnectTimeoutError)):
         return LLMServiceError("timeout", "The model service timed out.", retryable=True)
     if isinstance(exc, (bce.NoCredentialsError, bce.PartialCredentialsError, bce.NoRegionError)):
@@ -201,7 +224,7 @@ class BedrockClaudeClient(LLMClient):
     no network call; the test suite stubs `converse` (no AWS in CI).
 
     No sampling parameters (temperature/top_p) and no forced tool_choice
-    are sent: Opus 5.5 rejects both with a 400.
+    are sent: Sonnet 5.5 and Opus 5.5 reject both with a 400.
     """
 
     def __init__(
@@ -247,10 +270,12 @@ class BedrockClaudeClient(LLMClient):
             response = self._client.converse(**kwargs)
         except Exception as exc:
             error = _translate_bedrock_error(exc)
-            # Code and category only: the raw message can embed account IDs/ARNs.
+            # Server-side log: AWS's message only in sanitized form (raw text can
+            # embed account IDs and session names).
             logger.warning(
-                "bedrock converse failed: kind=%s code=%s model=%s region=%s",
-                error.kind, error.aws_code or type(exc).__name__, self.model_id, self.region,
+                "bedrock converse failed: kind=%s code=%s request_id=%s model=%s region=%s aws_message=%s",
+                error.kind, error.aws_code or type(exc).__name__, error.request_id, self.model_id, self.region,
+                error.aws_message,
             )
             raise error from None
 

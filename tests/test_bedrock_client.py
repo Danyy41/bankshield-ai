@@ -52,10 +52,15 @@ REASONING = {"reasoningContent": {"reasoningText": {"text": "thinking...", "sign
 # --- configuration -------------------------------------------------------------
 
 
-def test_default_model_is_opus_5_5_us_inference_profile(monkeypatch):
+def test_default_model_is_sonnet_5_5_us_inference_profile(monkeypatch):
     for var in (config.BEDROCK_MODEL_ID_ENV_VAR, config.BEDROCK_REGION_ENV_VAR, "AWS_REGION", "AWS_DEFAULT_REGION"):
         monkeypatch.delenv(var, raising=False)
-    assert bedrock_settings() == ("us.anthropic.claude-opus-5-5", "us-east-1")
+    assert bedrock_settings() == ("us.anthropic.claude-sonnet-5-5", "us-east-1")
+
+
+def test_opus_5_5_remains_selectable(monkeypatch):
+    monkeypatch.setenv(config.BEDROCK_MODEL_ID_ENV_VAR, config.BEDROCK_MODEL_ID_OPUS)
+    assert BedrockClaudeClient(region="us-east-1").model_id == "us.anthropic.claude-opus-5-5"
 
 
 def test_model_and_region_overridable_by_env(monkeypatch):
@@ -145,6 +150,8 @@ def test_client_errors_map_to_safe_llm_service_errors(code, kind, retryable):
     err = excinfo.value
     assert (err.kind, err.retryable, err.aws_code) == (kind, retryable, code)
     assert "123456789012" not in str(err) and "arn:" not in str(err)
+    # AWS's own explanation is kept for local diagnostics, sanitized
+    assert "is not authorized" in err.aws_message and "123456789012" not in err.aws_message
     assert err.__cause__ is None  # raw AWS error not chained into tracebacks
 
 
@@ -252,7 +259,8 @@ class _FailingClient:
     ("error", "status"),
     [
         (LLMServiceError("throttled", "The model is rate-limited; retry shortly.", retryable=True), 503),
-        (LLMServiceError("not_configured", "Access to the configured model is denied.", retryable=False), 502),
+        (LLMServiceError("not_configured", "Access to the configured model is denied.", retryable=False,
+                         aws_message="User: arn:aws:iam::****9012:user/x is not authorized ..."), 502),
     ],
 )
 def test_api_maps_bedrock_failures_to_safe_5xx_and_saves_nothing(auth_headers, error, status):
@@ -264,6 +272,7 @@ def test_api_maps_bedrock_failures_to_safe_5xx_and_saves_nothing(auth_headers, e
             response = http.post("/investigations", json={"transaction_id": txn}, headers=auth_headers("analyst"))
             assert response.status_code == status
             body = response.json()["detail"]
+            assert "not authorized" not in response.text  # AWS's message never reaches API callers
             assert body["error"] == error.kind and body["retryable"] is error.retryable
             assert ("Retry-After" in response.headers) is error.retryable
             # nothing saved for the failed run (an earlier test's result, if any, is untouched)
@@ -291,7 +300,7 @@ def _preflight_factory(stubs: dict[str, Stubber]):
 
 
 def test_preflight_reports_invalid_credentials_as_blocker(monkeypatch):
-    monkeypatch.delenv(config.BEDROCK_MODEL_ID_ENV_VAR, raising=False)
+    monkeypatch.setenv(config.BEDROCK_MODEL_ID_ENV_VAR, config.BEDROCK_MODEL_ID_OPUS)
     stubs: dict[str, Stubber] = {}
     factory = _preflight_factory(stubs)
     factory("sts", "us-east-1")
@@ -301,7 +310,7 @@ def test_preflight_reports_invalid_credentials_as_blocker(monkeypatch):
 
 
 def test_preflight_ready_and_reports_missing_model_access(monkeypatch):
-    monkeypatch.delenv(config.BEDROCK_MODEL_ID_ENV_VAR, raising=False)
+    monkeypatch.setenv(config.BEDROCK_MODEL_ID_ENV_VAR, config.BEDROCK_MODEL_ID_OPUS)
     stubs: dict[str, Stubber] = {}
     factory = _preflight_factory(stubs)
     factory("sts", "us-east-1"), factory("bedrock", "us-east-1")
@@ -349,3 +358,39 @@ def test_redact_removes_aws_identifiers():
     flat = str(out)
     assert "123456789012" not in flat and "AKIA" not in flat and "1b4e28ba" not in flat and "arn:" not in flat
     assert out["c"] == 42
+
+
+# --- model choice: IAM policy and cost ------------------------------------------------
+
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from bankshield.investigation.bedrock_live import estimate_run_cost, invoke_policy  # noqa: E402
+
+DEPLOY_IAM = Path(__file__).resolve().parents[1] / "deploy" / "iam"
+
+
+@pytest.mark.parametrize("model_id", ["us.anthropic.claude-sonnet-5-5", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"])
+def test_invoke_policy_is_least_privilege(model_id):
+    policy = invoke_policy([model_id], "123456789012")
+    invoke = [st for st in policy["Statement"] if st["Action"] == "bedrock:InvokeModel"]
+    profile_arn = f"arn:aws:bedrock:us-east-1:123456789012:inference-profile/{model_id}"
+    assert [st["Resource"] for st in invoke] == [
+        profile_arn, f"arn:aws:bedrock:*::foundation-model/{model_id.removeprefix('us.')}",
+    ]
+    assert invoke[1]["Condition"] == {"StringEquals": {"bedrock:InferenceProfileArn": profile_arn}}
+    actions = {a for st in policy["Statement"] for a in ([st["Action"]] if isinstance(st["Action"], str) else st["Action"])}
+    assert not any("*" in a or a.startswith("aws-marketplace") for a in actions)
+
+
+def test_checked_in_policies_match_the_generator():
+    assert json.loads((DEPLOY_IAM / "bedrock-invoke-policy.json").read_text()) == invoke_policy(
+        [config.BEDROCK_MODEL_ID_DEFAULT])
+    assert json.loads((DEPLOY_IAM / "bedrock-invoke-policy-opus-5-5.json").read_text()) == invoke_policy(
+        [config.BEDROCK_MODEL_ID_OPUS])
+
+
+def test_run_cost_estimate_tracks_the_model():
+    sonnet, opus = estimate_run_cost("us.anthropic.claude-sonnet-5-5"), estimate_run_cost("us.anthropic.claude-opus-5-5")
+    assert 0 < sonnet[0] < sonnet[1] < opus[1]
+    assert sonnet[0] == pytest.approx(30 * 0.002 + 5 * 0.010)
