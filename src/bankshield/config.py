@@ -209,16 +209,42 @@ POLICY_DOCS_DIR = ROOT_DIR / "data" / "policy_docs"
 INVESTIGATION_MODEL_PATH = XGBOOST_WITH_GRAPH_MODEL_PATH
 INVESTIGATION_FEATURE_COLUMNS = FEATURE_COLUMNS_WITH_GRAPH
 
-# Bedrock / Claude configuration. Model ID uses the Bedrock `anthropic.`
-# prefix (see AWS Bedrock docs) -- overridable via env var so this can be
-# pointed at a different Bedrock-enabled model/region without a code change.
-BEDROCK_MODEL_ID_DEFAULT = "anthropic.claude-opus-5"
+# Bedrock / Claude configuration. Claude Opus 5.5 is served on Bedrock only
+# through cross-region inference profiles (`<geo>.anthropic.claude-opus-5-5`,
+# geo = us | eu | jp | au, or `global.` -- no ARN-versioned base model ID),
+# so the default is the US geographic profile: requests stay inside US
+# regions, which suits a bank's data-residency posture better than the
+# `global.` profile. Override per deployment without a code change:
+#   BANKSHIELD_BEDROCK_MODEL_ID  e.g. eu.anthropic.claude-opus-5-5 (with an EU region)
+#   BANKSHIELD_BEDROCK_REGION    else AWS_REGION / AWS_DEFAULT_REGION, else us-east-1
+# Credentials are never configured here: boto3's standard provider chain
+# (env vars, shared profile / SSO, container or instance role) supplies them.
+BEDROCK_MODEL_ID_ENV_VAR = "BANKSHIELD_BEDROCK_MODEL_ID"
+BEDROCK_REGION_ENV_VAR = "BANKSHIELD_BEDROCK_REGION"
+BEDROCK_MODEL_ID_DEFAULT = "us.anthropic.claude-opus-5-5"
 BEDROCK_REGION_DEFAULT = "us-east-1"
+
+# Per-turn output cap. Opus 5.5 always thinks (adaptively), and thinking
+# counts toward this, so leave headroom above the ~1-2K-token narrative.
+BEDROCK_MAX_TOKENS = 8192
+
+# botocore transport settings. "adaptive" retry mode backs off on
+# throttling with client-side rate limiting; the attempt count includes the first
+# try. The read timeout bounds one model turn (an API request runs at most
+# AgentRunConfig.max_turns of them).
+BEDROCK_CONNECT_TIMEOUT_S = 10
+BEDROCK_READ_TIMEOUT_S = 120
+BEDROCK_MAX_ATTEMPTS = 4
+BEDROCK_RETRY_MODE = "adaptive"
 
 # Rough list-price token costs (USD per 1,000 tokens) used only for the
 # offline cost estimator in the evaluation harness -- not billing-accurate,
-# a planning estimate. Keyed by substring match against the model id.
+# a planning estimate. Keyed by substring match against the model id, first
+# match wins (so the more specific "claude-opus-5-5" precedes "claude-opus-5").
+# Opus 5.5 is $4 / $20 per MTok; geographic (us./eu./...) and in-region
+# endpoints add ~10% over global., which this estimate ignores.
 BEDROCK_PRICE_PER_1K_TOKENS = {
+    "claude-opus-5-5": {"input": 0.004, "output": 0.020},
     "claude-opus-5": {"input": 0.005, "output": 0.025},
     "claude-sonnet-5": {"input": 0.003, "output": 0.015},
     "claude-haiku-4-5": {"input": 0.001, "output": 0.005},

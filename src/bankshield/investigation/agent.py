@@ -25,7 +25,14 @@ from dataclasses import dataclass
 from bankshield import config
 from bankshield.investigation import data_access, tools
 from bankshield.investigation.approvals import get_approval_store
-from bankshield.investigation.llm_client import ContentBlock, LLMClient, TextBlock, ToolUseBlock
+from bankshield.investigation.llm_client import (
+    ContentBlock,
+    LLMClient,
+    LLMServiceError,
+    OpaqueBlock,
+    TextBlock,
+    ToolUseBlock,
+)
 from bankshield.investigation.rag import search_policy
 from bankshield.investigation.schemas import (
     AuthEvent,
@@ -142,6 +149,8 @@ def _content_to_converse(blocks: list[ContentBlock]) -> list[dict]:
             out.append({"text": block.text})
         elif isinstance(block, ToolUseBlock):
             out.append({"toolUse": {"toolUseId": block.id, "name": block.name, "input": block.input}})
+        elif isinstance(block, OpaqueBlock):
+            out.append(block.raw)
     return out
 
 
@@ -188,6 +197,12 @@ class AgentRunConfig:
     max_turns: int = 8
 
 
+# Stop reasons that end a turn normally. Anything else (a refusal, a Bedrock
+# guardrail intervention, a content filter) also ends the loop -- tools are
+# only ever run on "tool_use" -- and is called out in the narrative.
+_NORMAL_STOP_REASONS = {"end_turn", "tool_use", "stop_sequence"}
+
+
 def run_investigation(
     transaction_id: str,
     llm_client: LLMClient,
@@ -207,7 +222,14 @@ def run_investigation(
     model_id = getattr(llm_client, "model_id", "unknown")
 
     for _ in range(run_config.max_turns):
-        response = llm_client.converse(messages, system=SYSTEM_PROMPT, tools=tools.TOOL_SPECS)
+        try:
+            response = llm_client.converse(messages, system=SYSTEM_PROMPT, tools=tools.TOOL_SPECS)
+        except LLMServiceError as exc:
+            # Fail closed: no partial result is returned or saved. A case the
+            # agent already proposed this run stays a *pending* approval --
+            # still gated on a reviewer -- and is reported with the error.
+            exc.pending_approval_ids = [a.approval_id for a in pending_approvals]
+            raise
         total_input_tokens += response.input_tokens
         total_output_tokens += response.output_tokens
         model_id = response.model_id
@@ -218,6 +240,10 @@ def run_investigation(
         if text:
             narrative = text if not narrative else f"{narrative}\n{text}"
 
+        if response.stop_reason == "max_tokens":
+            narrative += "\n[investigation stopped: the model hit its output limit]"
+        elif response.stop_reason not in _NORMAL_STOP_REASONS:
+            narrative += f"\n[investigation stopped by the model: {response.stop_reason}]"
         if response.stop_reason != "tool_use":
             break
 

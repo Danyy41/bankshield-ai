@@ -70,7 +70,7 @@ from bankshield.investigation import data_access
 from bankshield.investigation.agent import run_investigation
 from bankshield.investigation.approvals import SelfApprovalError, get_approval_store
 from bankshield.investigation.case_store import get_case_store
-from bankshield.investigation.llm_client import AutoFakeLLMClient, BedrockClaudeClient, LLMClient
+from bankshield.investigation.llm_client import AutoFakeLLMClient, BedrockClaudeClient, LLMClient, LLMServiceError
 from bankshield.investigation.rag import search_policy
 from bankshield.investigation.schemas import Case, InvestigationResult, PendingApproval
 from bankshield.persistence import audit
@@ -259,8 +259,26 @@ def post_investigation(
         result = run_investigation(request.transaction_id, llm_client)
     except data_access.NotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except LLMServiceError as exc:
+        raise _llm_unavailable(exc) from None
     _investigation_results().save(result, requested_by=principal.username)
     return result
+
+
+def _llm_unavailable(exc: LLMServiceError) -> HTTPException:
+    """Map a model-backend failure to a caller-safe response: 503 (with
+    Retry-After) when retrying may help, 502 when the backend rejected or
+    can't serve the request as configured. Nothing is saved for the run;
+    the detail carries only the safe message and category, never AWS text."""
+    detail = {
+        "message": f"Investigation not completed: {exc}",
+        "error": exc.kind,
+        "retryable": exc.retryable,
+        "pending_approval_ids": exc.pending_approval_ids,
+    }
+    if exc.retryable:
+        return HTTPException(status_code=503, detail=detail, headers={"Retry-After": "30"})
+    return HTTPException(status_code=502, detail=detail)
 
 
 @app.get("/investigations/{transaction_id}", response_model=InvestigationResult)
