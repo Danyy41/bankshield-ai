@@ -20,3 +20,6 @@ boto3==1.43.114
 
 # Phase 5: AI security / red-team evaluation
 PyYAML==6.0.3
+
+# MCP server for the read-only investigation tools (src/bankshield/mcp_server.py)
+mcp==2.3.0

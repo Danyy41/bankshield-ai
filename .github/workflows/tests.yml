@@ -8,8 +8,10 @@ name: Tests
 # pinned lock, so the pipeline is reproducible run to run. Everything runs
 # offline -- no AWS credentials, no live model.
 #
-# The `docker` job builds the production image in parallel, runs it hardened
-# (read-only rootfs, no capabilities), and smoke-tests the live API.
+# The MCP server is exercised by its pytest suite (official Python SDK client,
+# in-process and over stdio) and by an independent client, the MCP Inspector
+# CLI. The `docker` job builds the production image in parallel, runs it
+# hardened (read-only rootfs, no capabilities), and smoke-tests the live API.
 
 on:
   push:
@@ -58,6 +60,14 @@ jobs:
 
       - name: Run pytest suite
         run: python -m pytest -v --junitxml=pytest-results.xml
+
+      - name: Set up Node.js (for the MCP Inspector client)
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - name: MCP server check with an independent client (MCP Inspector CLI)
+        run: scripts/check_mcp_inspector.sh python
 
       - name: Run Phase 5 red-team suite (fails on any unblocked attack)
         run: python scripts/run_redteam.py
