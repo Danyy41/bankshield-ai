@@ -40,6 +40,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from bankshield import config
+from bankshield.agents.server import mount_a2a_agents
 from bankshield.investigation import data_access
 from bankshield.investigation.agent import run_investigation
 from bankshield.investigation.approvals import get_approval_store
@@ -241,3 +242,18 @@ def get_case(case_id: str = _id_path()) -> Case:
     if case is None:
         raise HTTPException(status_code=404, detail=f"no case with id {case_id!r}")
     return case
+
+
+# --- A2A agents (triage + investigation) ------------------------------------
+# Mounted in this process so the investigation agent's case proposals land in
+# the same ApprovalStore the decision endpoint above reads -- agents can
+# propose, only a named human reviewer can approve. See agents/server.py.
+
+
+def _record_investigation(result: InvestigationResult) -> None:
+    _investigation_results[result.transaction_id] = result
+
+
+a2a_agents = mount_a2a_agents(
+    app, llm_client_factory=get_llm_client, on_investigation_result=_record_investigation
+)
