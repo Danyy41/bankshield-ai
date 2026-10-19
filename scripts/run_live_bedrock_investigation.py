@@ -119,7 +119,9 @@ def main() -> int:
     try:
         result = run_investigation(txn_id, client)
     except LLMServiceError as exc:
-        print(f"[FAIL] Bedrock call failed ({exc.kind}, {exc.aws_code or 'no code'}): {exc}")
+        print(f"[FAIL] Bedrock call failed ({exc.kind}, {exc.aws_code or 'no code'}, request {exc.request_id}): {exc}")
+        if exc.kind == "not_configured":
+            print("       Diagnose (free, no inference): python scripts/bedrock_access_diagnose.py")
         return 1
     cases_after = len(get_case_store().list_all())
 

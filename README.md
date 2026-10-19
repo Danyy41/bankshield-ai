@@ -711,6 +711,27 @@ if every check passes does it save a sanitized copy (ARNs, account IDs,
 access keys and request/approval IDs redacted) to
 `docs/examples/live_bedrock_investigation.{md,json}`.
 
+**If the call is denied (`AccessDeniedException`)** even though the IAM
+simulator says "allowed", find out why with free, read-only calls:
+
+```
+AWS_PROFILE=your-profile python scripts/bedrock_access_diagnose.py
+```
+
+It pulls the denied call from CloudTrail (error code, AWS's message, request
+ID, region) and names the cause from that message: a service control,
+resource control, session or VPC-endpoint policy, a permissions boundary, a
+statement that didn't match, or a Bedrock-side gate (model access/agreement,
+Marketplace subscription, the Anthropic use-case form). It also re-runs the
+IAM simulation with the context Bedrock actually sends: the foundation model
+in *every* region the profile routes to, with `bedrock:InferenceProfileArn` and
+`aws:RequestedRegion`, plus the SCP verdict. A plain simulation without that
+context can't see a region-restricting SCP or a condition mismatch. Account
+IDs are masked to their last four digits and SSO session names hidden.
+`--reproduce --confirm-billable` adds one `maxTokens=1` call (free if denied).
+There is no separate IAM action for Converse: it is authorized as
+`bedrock:InvokeModel`.
+
 **Live-run status: pending.** No live investigation has been recorded yet:
 the development environment for this repo has no valid AWS credentials,
 and no example output is fabricated. The example above will appear here

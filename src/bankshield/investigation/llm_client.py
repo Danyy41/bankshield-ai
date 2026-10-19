@@ -117,11 +117,16 @@ class LLMServiceError(RuntimeError):
     `config.BEDROCK_MAX_ATTEMPTS` times by the time this is raised).
     """
 
-    def __init__(self, kind: str, message: str, *, retryable: bool, aws_code: str | None = None):
+    def __init__(
+        self, kind: str, message: str, *, retryable: bool, aws_code: str | None = None, request_id: str | None = None
+    ):
         super().__init__(message)
         self.kind = kind
         self.retryable = retryable
         self.aws_code = aws_code
+        # AWS request ID: not sensitive, and what AWS Support / CloudTrail
+        # lookups need to find the exact failed call.
+        self.request_id = request_id
         # Set by agent.run_investigation: case proposals filed earlier in the
         # aborted run (still pending human approval).
         self.pending_approval_ids: list[str] = []
@@ -156,7 +161,8 @@ def _translate_bedrock_error(exc: Exception) -> LLMServiceError:
         kind, retryable, message = _BEDROCK_ERRORS.get(
             code, ("model_error", False, "The model service returned an unexpected error.")
         )
-        return LLMServiceError(kind, message, retryable=retryable, aws_code=code)
+        request_id = exc.response.get("ResponseMetadata", {}).get("RequestId")
+        return LLMServiceError(kind, message, retryable=retryable, aws_code=code, request_id=request_id)
     if isinstance(exc, (bce.ReadTimeoutError, bce.ConnectTimeoutError)):
         return LLMServiceError("timeout", "The model service timed out.", retryable=True)
     if isinstance(exc, (bce.NoCredentialsError, bce.PartialCredentialsError, bce.NoRegionError)):
@@ -249,8 +255,8 @@ class BedrockClaudeClient(LLMClient):
             error = _translate_bedrock_error(exc)
             # Code and category only: the raw message can embed account IDs/ARNs.
             logger.warning(
-                "bedrock converse failed: kind=%s code=%s model=%s region=%s",
-                error.kind, error.aws_code or type(exc).__name__, self.model_id, self.region,
+                "bedrock converse failed: kind=%s code=%s request_id=%s model=%s region=%s",
+                error.kind, error.aws_code or type(exc).__name__, error.request_id, self.model_id, self.region,
             )
             raise error from None
 
