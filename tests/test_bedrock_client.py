@@ -145,6 +145,8 @@ def test_client_errors_map_to_safe_llm_service_errors(code, kind, retryable):
     err = excinfo.value
     assert (err.kind, err.retryable, err.aws_code) == (kind, retryable, code)
     assert "123456789012" not in str(err) and "arn:" not in str(err)
+    # AWS's own explanation is kept for local diagnostics, sanitized
+    assert "is not authorized" in err.aws_message and "123456789012" not in err.aws_message
     assert err.__cause__ is None  # raw AWS error not chained into tracebacks
 
 
@@ -252,7 +254,8 @@ class _FailingClient:
     ("error", "status"),
     [
         (LLMServiceError("throttled", "The model is rate-limited; retry shortly.", retryable=True), 503),
-        (LLMServiceError("not_configured", "Access to the configured model is denied.", retryable=False), 502),
+        (LLMServiceError("not_configured", "Access to the configured model is denied.", retryable=False,
+                         aws_message="User: arn:aws:iam::****9012:user/x is not authorized ..."), 502),
     ],
 )
 def test_api_maps_bedrock_failures_to_safe_5xx_and_saves_nothing(auth_headers, error, status):
@@ -264,6 +267,7 @@ def test_api_maps_bedrock_failures_to_safe_5xx_and_saves_nothing(auth_headers, e
             response = http.post("/investigations", json={"transaction_id": txn}, headers=auth_headers("analyst"))
             assert response.status_code == status
             body = response.json()["detail"]
+            assert "not authorized" not in response.text  # AWS's message never reaches API callers
             assert body["error"] == error.kind and body["retryable"] is error.retryable
             assert ("Retry-After" in response.headers) is error.retryable
             # nothing saved for the failed run (an earlier test's result, if any, is untouched)

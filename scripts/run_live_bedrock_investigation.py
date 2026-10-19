@@ -41,6 +41,7 @@ from bankshield.auth.context import Principal, current_principal  # noqa: E402
 from bankshield.investigation import data_access  # noqa: E402
 from bankshield.investigation.agent import run_investigation  # noqa: E402
 from bankshield.investigation.approvals import get_approval_store  # noqa: E402
+from bankshield.investigation.bedrock_diagnostics import explain_denial  # noqa: E402
 from bankshield.investigation.bedrock_live import redact, run_preflight, verify_live_result  # noqa: E402
 from bankshield.investigation.case_store import get_case_store  # noqa: E402
 from bankshield.investigation.llm_client import BedrockClaudeClient, LLMServiceError  # noqa: E402
@@ -120,8 +121,12 @@ def main() -> int:
         result = run_investigation(txn_id, client)
     except LLMServiceError as exc:
         print(f"[FAIL] Bedrock call failed ({exc.kind}, {exc.aws_code or 'no code'}, request {exc.request_id}): {exc}")
-        if exc.kind == "not_configured":
-            print("       Diagnose (free, no inference): python scripts/bedrock_access_diagnose.py")
+        if exc.aws_message:
+            print(f"       AWS says: {exc.aws_message}")
+        if exc.aws_code == "AccessDeniedException" and exc.aws_message:
+            e = explain_denial(exc.aws_message)
+            print(f"       denied: {e.action or '?'} on {e.resource or '?'} -> {e.bucket} ({e.cause.category})")
+            print(f"       fix: {e.cause.fix}")
         return 1
     cases_after = len(get_case_store().list_all())
 

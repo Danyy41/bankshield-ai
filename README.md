@@ -728,7 +728,16 @@ in *every* region the profile routes to, with `bedrock:InferenceProfileArn` and
 `aws:RequestedRegion`, plus the SCP verdict. A plain simulation without that
 context can't see a region-restricting SCP or a condition mismatch. Account
 IDs are masked to their last four digits and SSO session names hidden.
-`--reproduce --confirm-billable` adds one `maxTokens=1` call (free if denied).
+`--reproduce-only --confirm-billable` skips those checks (for a restricted
+user that can't read IAM or CloudTrail) and sends one controlled Converse
+request (`maxTokens=1`, a single attempt with no retries; not billed if
+denied). It prints AWS's own error, sanitized: code, HTTP status, request
+ID, the message, and the denied action and resource. It then says whether
+the denial is missing Marketplace subscription permissions, an IAM denial on
+the inference profile or foundation model, a model-access or account-level
+restriction, or another service's authorization. The live-investigation
+script prints the same details when a call is denied. API and A2A callers
+still only get the generic message.
 There is no separate IAM action for Converse: it is authorized as
 `bedrock:InvokeModel`.
 

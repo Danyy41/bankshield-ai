@@ -118,7 +118,14 @@ class LLMServiceError(RuntimeError):
     """
 
     def __init__(
-        self, kind: str, message: str, *, retryable: bool, aws_code: str | None = None, request_id: str | None = None
+        self,
+        kind: str,
+        message: str,
+        *,
+        retryable: bool,
+        aws_code: str | None = None,
+        request_id: str | None = None,
+        aws_message: str | None = None,
     ):
         super().__init__(message)
         self.kind = kind
@@ -127,6 +134,11 @@ class LLMServiceError(RuntimeError):
         # AWS request ID: not sensitive, and what AWS Support / CloudTrail
         # lookups need to find the exact failed call.
         self.request_id = request_id
+        # AWS's own explanation (it names the denying policy type, action and
+        # resource), sanitized: account IDs masked, session names hidden. For
+        # operators and local diagnostics only -- never part of str(exc), so
+        # it doesn't reach API or A2A callers.
+        self.aws_message = aws_message
         # Set by agent.run_investigation: case proposals filed earlier in the
         # aborted run (still pending human approval).
         self.pending_approval_ids: list[str] = []
@@ -161,8 +173,13 @@ def _translate_bedrock_error(exc: Exception) -> LLMServiceError:
         kind, retryable, message = _BEDROCK_ERRORS.get(
             code, ("model_error", False, "The model service returned an unexpected error.")
         )
+        from bankshield.investigation.bedrock_diagnostics import sanitize
+
         request_id = exc.response.get("ResponseMetadata", {}).get("RequestId")
-        return LLMServiceError(kind, message, retryable=retryable, aws_code=code, request_id=request_id)
+        aws_message = sanitize(exc.response.get("Error", {}).get("Message", "")) or None
+        return LLMServiceError(
+            kind, message, retryable=retryable, aws_code=code, request_id=request_id, aws_message=aws_message
+        )
     if isinstance(exc, (bce.ReadTimeoutError, bce.ConnectTimeoutError)):
         return LLMServiceError("timeout", "The model service timed out.", retryable=True)
     if isinstance(exc, (bce.NoCredentialsError, bce.PartialCredentialsError, bce.NoRegionError)):
@@ -253,10 +270,12 @@ class BedrockClaudeClient(LLMClient):
             response = self._client.converse(**kwargs)
         except Exception as exc:
             error = _translate_bedrock_error(exc)
-            # Code and category only: the raw message can embed account IDs/ARNs.
+            # Server-side log: AWS's message only in sanitized form (raw text can
+            # embed account IDs and session names).
             logger.warning(
-                "bedrock converse failed: kind=%s code=%s request_id=%s model=%s region=%s",
+                "bedrock converse failed: kind=%s code=%s request_id=%s model=%s region=%s aws_message=%s",
                 error.kind, error.aws_code or type(exc).__name__, error.request_id, self.model_id, self.region,
+                error.aws_message,
             )
             raise error from None
 

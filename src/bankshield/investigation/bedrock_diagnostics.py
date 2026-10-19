@@ -309,3 +309,93 @@ def diagnose(model_id: str, region: str, make: Callable[..., Any], *, role_arn: 
 
 def _cause(category: str) -> Cause:
     return next(c for _, c in _CAUSES if c.category == category)
+
+
+# --- reading one denial message -------------------------------------------------------
+
+# The four questions a denial has to answer, in the order they are checked.
+BUCKET_MARKETPLACE = "marketplace_subscription_permissions"
+BUCKET_IAM = "iam_denial_on_inference_profile_or_foundation_model"
+BUCKET_ACCOUNT = "model_access_or_account_restriction"
+BUCKET_OTHER = "other_service_authorization"
+BUCKET_UNRECOGNIZED = "unrecognized"
+
+_IAM_STYLE = re.compile(
+    r"not authorized to perform:?\s+(?P<action>[\w-]+:[\w*-]+)(?:\s+on resource:\s+(?P<resource>[^\s,]+))?"
+)
+
+
+@dataclass(frozen=True)
+class DenialExplanation:
+    bucket: str
+    cause: Cause
+    action: str | None  # the IAM action AWS says was denied, e.g. bedrock:InvokeModel
+    resource: str | None  # the exact resource it was denied on (sanitized)
+    resource_type: str | None  # inference-profile | foundation-model | other
+
+
+def explain_denial(message: str) -> DenialExplanation:
+    """Read an AccessDeniedException message: which action on which
+    resource was denied, by which policy type or Bedrock gate, and which of
+    the four buckets that falls in."""
+    cause = classify_access_denied(message)
+    match = _IAM_STYLE.search(message)
+    action = match.group("action") if match else None
+    resource = sanitize(match.group("resource")) if match and match.group("resource") else None
+    resource_type = None
+    if resource:
+        resource_type = next((t for t in ("inference-profile", "foundation-model") if f":{t}/" in resource), "other")
+
+    if cause.category == "marketplace" or (action or "").startswith("aws-marketplace:"):
+        bucket, cause = BUCKET_MARKETPLACE, _cause("marketplace")
+    elif action and not action.startswith("bedrock:"):
+        bucket = BUCKET_OTHER  # e.g. kms:Decrypt, sts:..., another service's permission
+    elif cause.category in {"scp", "rcp", "model_access", "use_case_form"}:
+        bucket = BUCKET_ACCOUNT
+    elif cause.category in {"identity_no_allow", "identity_explicit_deny", "permissions_boundary", "session_policy"}:
+        bucket = BUCKET_IAM
+    elif cause.category == "vpc_endpoint_policy":
+        bucket = BUCKET_OTHER
+    else:
+        bucket = BUCKET_UNRECOGNIZED
+    return DenialExplanation(bucket, cause, action, resource, resource_type)
+
+
+def reproduce_converse(runtime: Any, model_id: str) -> dict[str, Any]:
+    """Send ONE minimal Converse request (1-word prompt, maxTokens=1) and
+    return what AWS said, sanitized. `runtime` must be a bedrock-runtime
+    client configured for a single attempt, so a retryable error can't turn
+    into several requests. A denied request is not billed; an allowed one
+    costs a fraction of a cent."""
+    from botocore.exceptions import BotoCoreError, ClientError
+
+    try:
+        response = runtime.converse(
+            modelId=model_id,
+            messages=[{"role": "user", "content": [{"text": "ping"}]}],
+            inferenceConfig={"maxTokens": 1},
+        )
+    except ClientError as exc:
+        error, meta = exc.response.get("Error", {}), exc.response.get("ResponseMetadata", {})
+        headers = meta.get("HTTPHeaders", {})
+        result: dict[str, Any] = {
+            "outcome": "denied" if error.get("Code") == "AccessDeniedException" else "error",
+            "code": error.get("Code"),
+            "http_status": meta.get("HTTPStatusCode"),
+            "request_id": meta.get("RequestId") or headers.get("x-amzn-requestid"),
+            "error_type_header": headers.get("x-amzn-errortype"),
+            "message": sanitize(error.get("Message", "")),
+        }
+        if result["outcome"] == "denied":
+            result["explanation"] = explain_denial(error.get("Message", ""))
+        elif error.get("Code") == "ValidationException":
+            result["outcome"] = "authorized"  # the request got past authorization to validation
+        return result
+    except BotoCoreError as exc:
+        return {"outcome": "not_sent", "code": type(exc).__name__, "message": sanitize(str(exc))}
+    return {
+        "outcome": "allowed",
+        "request_id": response.get("ResponseMetadata", {}).get("RequestId"),
+        "stop_reason": response.get("stopReason"),
+        "usage": response.get("usage", {}),
+    }

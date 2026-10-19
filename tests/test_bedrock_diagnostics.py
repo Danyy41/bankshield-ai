@@ -159,3 +159,96 @@ def test_diagnosis_stops_on_invalid_credentials():
                                    http_status_code=403)
     d = diagnose(PROFILE_ID, "us-east-1", c, now=NOW)
     assert not d.credentials_ok and not d.causes
+
+
+# --- reading one denial message (the four buckets) ------------------------------------
+
+from bankshield.investigation.bedrock_diagnostics import (  # noqa: E402
+    BUCKET_ACCOUNT,
+    BUCKET_IAM,
+    BUCKET_MARKETPLACE,
+    BUCKET_OTHER,
+    explain_denial,
+    reproduce_converse,
+)
+
+USER = f"arn:aws:iam::{ACCOUNT}:user/bankshield-bedrock"
+FM = "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5"
+NO_ALLOW = "because no identity-based policy allows the bedrock:InvokeModel action"
+MARKETPLACE = (
+    "Model access is denied due to IAM user or service role is not authorized to perform the required AWS "
+    "Marketplace actions (aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe) to enable access to "
+    "this model. Refer to the Amazon Bedrock documentation for further details. Your AWS Marketplace "
+    "subscription for this model cannot be completed at this time. If you recently fixed this issue, try "
+    "again after 15 minutes."
+)
+
+
+@pytest.mark.parametrize(
+    ("message", "bucket", "category", "action", "resource_type"),
+    [
+        (MARKETPLACE, BUCKET_MARKETPLACE, "marketplace", None, None),
+        (f"User: {USER} is not authorized to perform: aws-marketplace:Subscribe on resource: * "
+         "because no identity-based policy allows the aws-marketplace:Subscribe action",
+         BUCKET_MARKETPLACE, "marketplace", "aws-marketplace:Subscribe", "other"),
+        (f"User: {USER} is not authorized to perform: bedrock:InvokeModel on resource: {PROFILE_ARN} {NO_ALLOW}",
+         BUCKET_IAM, "identity_no_allow", "bedrock:InvokeModel", "inference-profile"),
+        (f"User: {USER} is not authorized to perform: bedrock:InvokeModel on resource: {FM} {NO_ALLOW}",
+         BUCKET_IAM, "identity_no_allow", "bedrock:InvokeModel", "foundation-model"),
+        (f"User: {USER} is not authorized to perform: bedrock:InvokeModel on resource: {FM} "
+         "with an explicit deny in a service control policy",
+         BUCKET_ACCOUNT, "scp", "bedrock:InvokeModel", "foundation-model"),
+        ("You don't have access to the model with the specified model ID.", BUCKET_ACCOUNT, "model_access", None, None),
+        ("Model use case details have not been submitted for this account.", BUCKET_ACCOUNT, "use_case_form", None, None),
+        (f"User: {USER} is not authorized to perform: kms:Decrypt on resource: "
+         f"arn:aws:kms:us-east-1:{ACCOUNT}:key/k because no identity-based policy allows the kms:Decrypt action",
+         BUCKET_OTHER, "identity_no_allow", "kms:Decrypt", "other"),
+    ],
+)
+def test_explain_denial_buckets(message, bucket, category, action, resource_type):
+    e = explain_denial(message)
+    assert (e.bucket, e.cause.category, e.action, e.resource_type) == (bucket, category, action, resource_type)
+    assert e.resource is None or ACCOUNT not in e.resource
+
+
+def _runtime():
+    client = boto3.client("bedrock-runtime", region_name="us-east-1",
+                          aws_access_key_id="testing", aws_secret_access_key="testing")
+    return client, Stubber(client)
+
+
+def test_reproduce_converse_reports_sanitized_denial_with_request_id():
+    client, stub = _runtime()
+    message = f"User: {USER} is not authorized to perform: bedrock:InvokeModel on resource: {FM} {NO_ALLOW}"
+    stub.add_client_error(
+        "converse", service_error_code="AccessDeniedException", service_message=message, http_status_code=403,
+        response_meta={"RequestId": "1b4e28ba-2fa1-11d2-883f-0016d3cca427",
+                       "HTTPHeaders": {"x-amzn-errortype": "AccessDeniedException:http://internal.amazon.com/"}},
+        expected_params={"modelId": PROFILE_ID, "messages": [{"role": "user", "content": [{"text": "ping"}]}],
+                         "inferenceConfig": {"maxTokens": 1}},
+    )
+    with stub:
+        r = reproduce_converse(client, PROFILE_ID)
+    stub.assert_no_pending_responses()
+    assert r["outcome"] == "denied" and r["code"] == "AccessDeniedException" and r["http_status"] == 403
+    assert r["request_id"] == "1b4e28ba-2fa1-11d2-883f-0016d3cca427"
+    assert ACCOUNT not in r["message"] and "****9012" in r["message"]
+    assert r["explanation"].bucket == BUCKET_IAM and r["explanation"].resource_type == "foundation-model"
+
+
+def test_reproduce_converse_validation_error_means_authorized():
+    client, stub = _runtime()
+    stub.add_client_error("converse", service_error_code="ValidationException", http_status_code=400)
+    with stub:
+        assert reproduce_converse(client, PROFILE_ID)["outcome"] == "authorized"
+
+
+def test_reproduce_converse_allowed():
+    client, stub = _runtime()
+    stub.add_response("converse", {
+        "output": {"message": {"role": "assistant", "content": [{"text": "p"}]}}, "stopReason": "max_tokens",
+        "usage": {"inputTokens": 8, "outputTokens": 1, "totalTokens": 9}, "metrics": {"latencyMs": 1},
+    })
+    with stub:
+        r = reproduce_converse(client, PROFILE_ID)
+    assert r["outcome"] == "allowed" and r["usage"]["outputTokens"] == 1

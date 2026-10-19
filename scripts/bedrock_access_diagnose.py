@@ -11,12 +11,18 @@ agreement state; and an IAM simulation of the exact request context
 with bedrock:InferenceProfileArn) including SCP and boundary verdicts.
 
 --reproduce --confirm-billable additionally sends ONE Converse request
-(maxTokens=1, a 1-word prompt) and prints the live error. If it is denied
-it costs nothing; if it is allowed it costs well under $0.001.
+(maxTokens=1, a 1-word prompt, a single attempt with no retries) and prints
+AWS's own error: code, HTTP status, request ID, the sanitized message, and
+which action on which resource was denied by which policy type -- i.e.
+whether it is a Marketplace-subscription permission, an IAM denial on the
+inference profile or foundation model, a model-access/account restriction,
+or another service's authorization. --reproduce-only skips the read-only
+checks (useful for a restricted user that can't read IAM/CloudTrail). A
+denied request is not billed; an allowed one costs well under $0.001.
 
 Usage:
     python scripts/bedrock_access_diagnose.py [--hours 24] [--role-arn ARN]
-    python scripts/bedrock_access_diagnose.py --reproduce --confirm-billable
+    python scripts/bedrock_access_diagnose.py --reproduce-only --confirm-billable
 """
 
 import argparse
@@ -27,34 +33,60 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import boto3  # noqa: E402
 
-from bankshield.investigation.bedrock_diagnostics import classify_access_denied, diagnose, sanitize  # noqa: E402
+from bankshield.investigation.bedrock_diagnostics import (  # noqa: E402
+    BUCKET_ACCOUNT,
+    BUCKET_IAM,
+    BUCKET_MARKETPLACE,
+    BUCKET_OTHER,
+    BUCKET_UNRECOGNIZED,
+    diagnose,
+    reproduce_converse,
+)
 from bankshield.investigation.llm_client import bedrock_settings  # noqa: E402
 
 
-def reproduce(model_id: str, region: str) -> None:
-    from botocore.exceptions import ClientError
+BUCKET_LABELS = {
+    BUCKET_MARKETPLACE: "Missing AWS Marketplace subscription permissions",
+    BUCKET_IAM: "IAM denial on the inference profile or foundation model",
+    BUCKET_ACCOUNT: "Model access or account-level restriction (SCP/RCP/model access/use-case form)",
+    BUCKET_OTHER: "Another service's authorization requirement",
+    BUCKET_UNRECOGNIZED: "Not recognized -- read the message; cite the request ID to AWS Support",
+}
 
-    client = boto3.client("bedrock-runtime", region_name=region)
-    print("\n== Live reproduction (one Converse call, maxTokens=1) ==")
-    try:
-        r = client.converse(
-            modelId=model_id,
-            messages=[{"role": "user", "content": [{"text": "ping"}]}],
-            inferenceConfig={"maxTokens": 1},
-        )
-        print(f"  ALLOWED: stopReason={r['stopReason']}, request {r['ResponseMetadata']['RequestId']} "
-              "-- access works now (this call was billed a fraction of a cent)")
-    except ClientError as exc:
-        err, meta = exc.response.get("Error", {}), exc.response.get("ResponseMetadata", {})
-        print(f"  code:       {err.get('Code')}")
-        print(f"  HTTP:       {meta.get('HTTPStatusCode')}")
-        print(f"  request ID: {meta.get('RequestId')}")
-        print(f"  message:    {sanitize(err.get('Message', ''))}")
-        if err.get("Code") == "AccessDeniedException":
-            cause = classify_access_denied(err.get("Message", ""))
-            print(f"  => {cause.category}: {cause.explanation}\n     fix: {cause.fix}")
-        elif err.get("Code") == "ValidationException":
-            print("  => authorization PASSED (the request reached validation); access is not the problem")
+
+def reproduce(model_id: str, region: str) -> None:
+    from botocore.config import Config
+
+    # One attempt only: no retries, so a throttle can't become several requests.
+    runtime = boto3.client(
+        "bedrock-runtime", region_name=region,
+        config=Config(connect_timeout=10, read_timeout=60, retries={"total_max_attempts": 1, "mode": "standard"}),
+    )
+    print(f"\n== Controlled Converse request: {model_id} in {region} (1 attempt, maxTokens=1) ==")
+    r = reproduce_converse(runtime, model_id)
+    if r["outcome"] == "allowed":
+        print(f"  ALLOWED: request {r['request_id']}, stopReason {r['stop_reason']}, usage {r['usage']}")
+        print("  Access works now. (This request was billed: a fraction of a cent.)")
+        return
+    if r["outcome"] == "not_sent":
+        print(f"  not sent ({r['code']}): {r['message']}")
+        return
+    print(f"  code:            {r['code']}")
+    print(f"  HTTP status:     {r['http_status']}")
+    print(f"  request ID:      {r['request_id']}")
+    print(f"  x-amzn-ErrorType:{' ' + str(r['error_type_header'])}")
+    print(f"  AWS message:     {r['message']}")
+    if r["outcome"] == "authorized":
+        print("  => Authorization PASSED (the request reached validation). Access is not the problem.")
+        return
+    e = r.get("explanation")
+    if e is None:
+        return
+    print(f"\n  denied action:   {e.action or '(not stated in the message)'}")
+    print(f"  denied resource: {e.resource or '(not stated)'}" + (f"  [{e.resource_type}]" if e.resource_type else ""))
+    print(f"  decided by:      {e.cause.category} -- {e.cause.explanation}")
+    print(f"  => {BUCKET_LABELS[e.bucket]}")
+    print(f"     fix: {e.cause.fix}")
 
 
 def main() -> int:
@@ -62,12 +94,17 @@ def main() -> int:
     parser.add_argument("--hours", type=int, default=24, help="CloudTrail look-back window")
     parser.add_argument("--role-arn", help="IAM role to simulate (default: derived from the caller)")
     parser.add_argument("--reproduce", action="store_true", help="also send one tiny Converse call")
-    parser.add_argument("--confirm-billable", action="store_true", help="required with --reproduce")
+    parser.add_argument("--reproduce-only", action="store_true",
+                        help="send only the one tiny Converse call; skip the read-only checks")
+    parser.add_argument("--confirm-billable", action="store_true", help="required with --reproduce(-only)")
     args = parser.parse_args()
-    if args.reproduce and not args.confirm_billable:
-        parser.error("--reproduce sends a (possibly billable) Converse call; add --confirm-billable")
+    if (args.reproduce or args.reproduce_only) and not args.confirm_billable:
+        parser.error("--reproduce sends a Converse call (billed only if allowed); add --confirm-billable")
 
     model_id, region = bedrock_settings()
+    if args.reproduce_only:
+        reproduce(model_id, region)
+        return 0
     print(f"Bedrock access diagnosis: {model_id} from {region} (read-only, no inference)")
     d = diagnose(model_id, region, boto3.client, role_arn=args.role_arn, since_hours=args.hours)
     for title, lines in d.sections:
