@@ -11,8 +11,9 @@ name: Tests
 # The MCP server is exercised by its pytest suite (official Python SDK client,
 # in-process and over stdio) and by an independent client, the MCP Inspector
 # CLI. The `docker` job builds the production image in parallel, runs it
-# hardened (read-only rootfs, no capabilities), and smoke-tests the live API,
-# including the A2A triage -> investigation flow and the human-approval gate.
+# hardened (read-only rootfs, no capabilities, state on a volume), smoke-tests
+# the live API -- auth, RBAC, the human-approval gate, the A2A triage ->
+# investigation flow -- then restarts it and verifies the state persisted.
 
 on:
   push:
@@ -110,27 +111,15 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Start container (read-only rootfs, no capabilities)
-        run: >
-          docker run -d --name bankshield -p 8000:8000
-          --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges
-          bankshield-ai:ci
-
-      - name: Wait for container health check
-        run: |
-          for i in $(seq 1 45); do
-            status=$(docker inspect -f '{{.State.Health.Status}}' bankshield)
-            echo "health: $status"
-            [ "$status" = healthy ] && exit 0
-            [ "$status" = unhealthy ] && break
-            sleep 2
-          done
-          echo "container did not become healthy"
-          exit 1
-
-      - name: Smoke test API (artifacts, offline mode, human-approval gate)
-        run: python3 scripts/smoke_test_api.py http://127.0.0.1:8000
+      - name: Smoke test hardened container, then restart and verify persisted state
+        env:
+          SMOKE_LOG: container.log
+        # Read-only rootfs, no capabilities, state on a named volume, signing
+        # key supplied at run time; provisions accounts via the CLI, runs
+        # scripts/smoke_test_api.py (auth, RBAC, approval gate, A2A), restarts
+        # the container and checks users/cases/audit trail survived.
+        run: scripts/docker_smoke.sh bankshield-ai:ci
 
       - name: Container logs
         if: always()
-        run: docker logs bankshield || true
+        run: cat container.log 2>/dev/null || true

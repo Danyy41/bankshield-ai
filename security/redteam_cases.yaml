@@ -268,6 +268,86 @@ cases:
       ApprovalStatus.APPROVED before constructing a Case -- defense in
       depth even though every current call site already guarantees this.
 
+  - attack_id: APR-04
+    category: approval_bypass
+    threat: >
+      Anyone who can reach the API tries to approve a pending case proposal
+      without logging in.
+    description: >
+      POST /approvals/{id}/decision with no Authorization header.
+    malicious_input: '{"approved": true} (no credentials)'
+    expected_security_behavior: >
+      401; the approval stays pending and no case is created.
+    mitigation: >
+      auth/dependencies.py::require_roles on the decision endpoint -- every
+      non-public endpoint requires a valid bearer token.
+
+  - attack_id: APR-05
+    category: approval_bypass
+    threat: >
+      An authenticated principal without decision authority -- an analyst,
+      an admin, or an agent service account (e.g. a compromised A2A agent)
+      -- tries to approve a case.
+    description: >
+      The decision endpoint is called with analyst, admin, and agent
+      tokens in turn.
+    malicious_input: '{"approved": true} with analyst / admin / agent bearer tokens'
+    expected_security_behavior: >
+      403 for each; the approval stays pending and no case is created.
+    mitigation: >
+      The decision endpoint accepts only the reviewer role, re-read from
+      the database on every request (auth/dependencies.py DECIDE_APPROVAL).
+
+  - attack_id: APR-06
+    category: approval_bypass
+    threat: >
+      A reviewer (or a client holding a reviewer's token) attributes an
+      approval to someone else -- e.g. a more senior officer -- to dodge
+      accountability or forge a sign-off.
+    description: >
+      An authenticated reviewer submits a decision whose body names a
+      different reviewer.
+    malicious_input: '{"approved": true, "reviewer": "chief.compliance.officer"}'
+    expected_security_behavior: >
+      403; the approval stays pending and the attempt is audited.
+    mitigation: >
+      The accountable reviewer is always the authenticated principal; a
+      body `reviewer` that names anyone else is refused (api/app.py
+      decide_approval).
+
+  - attack_id: APR-07
+    category: approval_bypass
+    threat: >
+      An attacker forges or replays credentials to act as a reviewer.
+    description: >
+      Decisions are attempted with an unsigned alg=none token claiming the
+      reviewer role, a token signed with the wrong key, an expired token,
+      and a validly signed token for a reviewer whose account was disabled.
+    malicious_input: 'alg=none JWT; HS256 JWT signed with an attacker key; expired JWT; token of a disabled user'
+    expected_security_behavior: >
+      401 for every one; the approval stays pending.
+    mitigation: >
+      auth/tokens.py verifies with a fixed algorithm, required exp/iat/sub,
+      issuer and audience; auth/dependencies.py re-loads the user and
+      rejects unknown or disabled accounts on every request.
+
+  - attack_id: APR-08
+    category: approval_bypass
+    threat: >
+      One person both starts an investigation and approves the case it
+      proposes, defeating the four-eyes principle behind human approval.
+    description: >
+      A reviewer runs POST /investigations themselves, then approves the
+      resulting proposal; afterwards a second reviewer decides it.
+    malicious_input: 'same reviewer token for POST /investigations and the decision'
+    expected_security_behavior: >
+      The self-approval is refused (403) with no case created; a different
+      reviewer can then approve it normally (200, one case).
+    mitigation: >
+      Proposals record the authenticated requester (tools.py ->
+      approvals.py requested_by); ApprovalStore.decide raises
+      SelfApprovalError when reviewer == requester.
+
   # --- 5. Citation integrity ---------------------------------------------------
 
   - attack_id: CITE-01
@@ -485,3 +565,18 @@ cases:
     mitigation: >
       security/validators.py::SearchPolicyInput bounds top_k to
       1 <= top_k <= 20.
+
+  - attack_id: ARG-04
+    category: privilege_escalation
+    threat: >
+      An unauthenticated caller, or a principal not allowed to drive agents,
+      invokes the A2A investigation agent to make it file case proposals.
+    description: >
+      An A2A SendMessage is posted to /a2a/investigator with no token, then
+      with a reviewer token.
+    malicious_input: 'JSON-RPC SendMessage {"transaction_id": <tier 1>} without / with a reviewer token'
+    expected_security_behavior: >
+      401 and 403 respectively; no new approval is filed.
+    mitigation: >
+      The A2A middleware in api/app.py requires a bearer token from the
+      analyst, agent, or admin role before any agent runs.

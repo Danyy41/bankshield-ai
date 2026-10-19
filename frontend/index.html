@@ -80,6 +80,9 @@
   .settings .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); flex: none; }
   .settings .dot.ok { background: var(--good); }
   .settings .dot.err { background: var(--critical); }
+  .settings input.cred { width: 130px; }
+  .settings button { font-size: 12.5px; padding: 5px 10px; }
+  .settings .who { font-size: 12.5px; color: var(--text-secondary); }
 
   h2.section-title {
     font-size: 13px;
@@ -225,6 +228,13 @@
         <label for="api-base">API URL</label>
         <input id="api-base" type="text" spellcheck="false" autocomplete="off">
       </div>
+      <form class="settings" id="login-form">
+        <span class="who" id="who">Not signed in</span>
+        <input class="cred" id="login-user" type="text" placeholder="username" autocomplete="username" spellcheck="false">
+        <input class="cred" id="login-pass" type="password" placeholder="password" autocomplete="current-password">
+        <button class="small" id="login-btn" type="submit">Sign in</button>
+        <button class="small" id="logout-btn" type="button" hidden>Sign out</button>
+      </form>
     </div>
   </div>
 </header>
@@ -316,10 +326,56 @@
     return (apiBaseInput.value || DEFAULT_API_BASE).replace(/\/+$/, "");
   }
 
+  // --- sign-in: short-lived bearer token from POST /auth/token. Kept in
+  // sessionStorage (gone when the tab closes), never in localStorage.
+  const TOKEN_KEY = "bankshield_token";
+  const who = document.getElementById("who");
+  const loginUser = document.getElementById("login-user");
+  const loginPass = document.getElementById("login-pass");
+  const loginBtn = document.getElementById("login-btn");
+  const logoutBtn = document.getElementById("logout-btn");
+
+  function session() {
+    try { return JSON.parse(sessionStorage.getItem(TOKEN_KEY) || "null"); } catch (e) { return null; }
+  }
+  function paintSession() {
+    const s = session();
+    who.textContent = s ? `Signed in as ${s.username} (${s.role})` : "Not signed in";
+    [loginUser, loginPass, loginBtn].forEach((el) => (el.hidden = !!s));
+    logoutBtn.hidden = !s;
+  }
+  function signOut() {
+    sessionStorage.removeItem(TOKEN_KEY);
+    paintSession();
+  }
+  document.getElementById("login-form").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const res = await fetch(apiBase() + "/auth/token", {
+        method: "POST",
+        body: new URLSearchParams({ username: loginUser.value.trim(), password: loginPass.value }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || res.statusText);
+      sessionStorage.setItem(TOKEN_KEY, JSON.stringify({
+        token: body.access_token, role: body.role, username: loginUser.value.trim(),
+      }));
+      loginPass.value = "";
+      paintSession();
+      loadSamples();
+    } catch (e) {
+      alert("Sign-in failed: " + e.message);
+    }
+  });
+  logoutBtn.addEventListener("click", signOut);
+  paintSession();
+
   async function api(path, options) {
-    const res = await fetch(apiBase() + path, Object.assign(
-      { headers: { "content-type": "application/json" } }, options || {}
-    ));
+    const s = session();
+    const headers = { "content-type": "application/json" };
+    if (s) headers.authorization = "Bearer " + s.token;
+    const res = await fetch(apiBase() + path, Object.assign({ headers }, options || {}));
+    if (res.status === 401 && s) signOut(); // expired or revoked token
     if (!res.ok) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail || detail; } catch (e) {}
@@ -433,8 +489,10 @@
       });
     } catch (e) {
       if (requestId !== samplesRequestId) return; // a newer call already landed
-      status.textContent = "Could not reach the API at " + apiBase() + " — " + e.message +
-        ". Check the API URL above (CORS must be enabled on the server).";
+      status.textContent = e.message.startsWith("401")
+        ? "Sign in (top right) to load sample transactions."
+        : "Could not reach the API at " + apiBase() + " — " + e.message +
+          ". Check the API URL above (CORS must be enabled on the server).";
       status.classList.add("err");
     }
     checkHealth();
@@ -595,10 +653,11 @@
       try {
         const updated = await api(`/approvals/${a.approval_id}/decision`, {
           method: "POST",
+          // The reviewer is whoever is signed in (a reviewer account); the
+          // API records it from the token, never from the request body.
           body: JSON.stringify({
             approved: approved,
-            reviewer: "Recruiter Demo",
-            notes: approved ? "Approved from the demo dashboard." : "Rejected from the demo dashboard.",
+            notes: approved ? "Approved from the dashboard." : "Rejected from the dashboard.",
           }),
         });
         paint(updated);

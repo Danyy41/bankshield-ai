@@ -33,15 +33,29 @@ BASE = "http://127.0.0.1:8000"
 CARD = "/.well-known/agent-card.json"
 
 
+# Agent calls authenticate as an agent service account (set per test below).
+_CALLER_HEADERS: dict[str, str] = {}
+
+
 def _asgi_client(base=BASE):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=base, timeout=120, headers=_CALLER_HEADERS
+    )
+
+
+def _bare_asgi_client(base=BASE):
+    # What the triage agent uses for its outbound call: it must add the
+    # caller's token itself (delegation), so no default credentials here.
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=base, timeout=120)
 
 
 @pytest.fixture(autouse=True)
-def _route_agent_to_agent_calls_in_process(monkeypatch):
+def _route_agent_to_agent_calls_in_process(monkeypatch, auth_headers):
+    _CALLER_HEADERS.clear()
+    _CALLER_HEADERS.update(auth_headers("agent"))
     # The triage agent's A2A client normally dials the investigation agent
     # over the network; in these tests it goes through the same ASGI app.
-    monkeypatch.setattr(a2a_agents.investigator_client, "httpx_client_factory", _asgi_client)
+    monkeypatch.setattr(a2a_agents.investigator_client, "httpx_client_factory", _bare_asgi_client)
 
 
 async def _send(path, message, base=BASE, http_factory=_asgi_client) -> T.Task:
@@ -80,8 +94,7 @@ def tiers():
 
 
 def _gate():
-    store = get_approval_store()
-    return len(store._approvals), len(get_case_store().list_all())
+    return get_approval_store().count(), len(get_case_store().list_all())
 
 
 # --- discovery ----------------------------------------------------------------
@@ -215,7 +228,7 @@ def test_triage_rejects_an_investigator_reply_of_unexpected_shape(monkeypatch, t
     assert report["pending_approval_ids"] == [] and report["human_action_required"] is False
 
 
-def test_agents_never_decide_approvals_or_create_cases(monkeypatch, tiers):
+def test_agents_never_decide_approvals_or_create_cases(monkeypatch, tiers, auth_headers):
     calls = []
     original_decide = ApprovalStore.decide
     original_create = CaseStore.create_from_approval
@@ -230,15 +243,46 @@ def test_agents_never_decide_approvals_or_create_cases(monkeypatch, tiers):
     # ...and the human half of the gate still works, through the HTTP API only.
     (approval_id,) = report["pending_approval_ids"]
 
-    async def decide(body):
-        async with _asgi_client() as http:
-            return await http.post(f"/approvals/{approval_id}/decision", json=body)
+    async def decide(body, headers):
+        async with _bare_asgi_client() as http:
+            return await http.post(f"/approvals/{approval_id}/decision", json=body, headers=headers)
 
-    assert anyio.run(decide, {"approved": True, "reviewer": ""}).status_code == 422
-    response = anyio.run(decide, {"approved": True, "reviewer": "analyst.jane"})
+    # The agent's own credentials can't decide it; a reviewer's can.
+    assert anyio.run(decide, {"approved": True}, auth_headers("agent")).status_code == 403
+    assert anyio.run(decide, {"approved": True, "reviewer": ""}, auth_headers("reviewer")).status_code == 422
+    response = anyio.run(decide, {"approved": True}, auth_headers("reviewer"))
     assert response.status_code == 200 and response.json()["status"] == "approved"
     assert calls == ["decide", "create"]
     assert [c for c in get_case_store().list_all() if c.approval_id == approval_id]
+
+
+# --- authentication ------------------------------------------------------------------
+
+
+def test_proposals_are_attributed_to_the_caller_through_delegation(tiers):
+    """The triage agent calls the investigation agent with the caller's own
+    token, so the case proposal is recorded as requested by the caller."""
+    report = artifact(send("/a2a/triage", {"transaction_ids": [tiers["tier_1"]]}))
+    (approval_id,) = report["pending_approval_ids"]
+    assert get_approval_store().get(approval_id).requested_by == "svc-triage"
+
+
+@pytest.mark.parametrize("role, expected", [(None, 401), ("reviewer", 403), ("analyst", 200), ("agent", 200)])
+def test_agent_endpoints_require_an_authorized_caller(auth_headers, tiers, role, expected):
+    before = _gate()
+    message = {
+        "jsonrpc": "2.0", "id": "1", "method": "SendMessage",
+        "params": {"message": {"messageId": "m1", "role": "ROLE_USER",
+                               "parts": [{"data": {"transaction_id": tiers["tier_3"]}}]}},
+    }
+
+    async def post():
+        async with _bare_asgi_client() as http:
+            headers = {"A2A-Version": "1.0", **(auth_headers(role) if role else {})}
+            return await http.post("/a2a/investigator", json=message, headers=headers)
+
+    assert anyio.run(post).status_code == expected
+    assert _gate() == before  # a tier 3 investigation proposes nothing either way
 
 
 # --- real network -------------------------------------------------------------------
@@ -250,7 +294,7 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def test_end_to_end_over_real_http(tiers):
+def test_end_to_end_over_real_http(tiers, auth_headers):
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
     env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "BANKSHIELD_A2A_BASE_URL": base}
@@ -269,7 +313,7 @@ def test_end_to_end_over_real_http(tiers):
             pytest.fail("server did not start")
 
         def network_client():
-            return httpx.AsyncClient(base_url=base, timeout=120)
+            return httpx.AsyncClient(base_url=base, timeout=120, headers=auth_headers("agent"))
 
         message = new_data_message({"transaction_ids": [tiers["tier_1"], tiers["tier_3"]]}, role=T.Role.ROLE_USER)
         task = anyio.run(_send, "/a2a/triage", message, base, network_client)
@@ -278,13 +322,13 @@ def test_end_to_end_over_real_http(tiers):
         assert report["escalated"] == 1
         (approval_id,) = report["pending_approval_ids"]
 
-        assert httpx.get(base + "/cases").json() == []
-        decision = httpx.post(
-            f"{base}/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "analyst.jane"}
-        )
+        reviewer = auth_headers("reviewer")
+        cases_before = httpx.get(base + "/cases", headers=reviewer).json()
+        assert not [c for c in cases_before if c["approval_id"] == approval_id]
+        decision = httpx.post(f"{base}/approvals/{approval_id}/decision", json={"approved": True}, headers=reviewer)
         assert decision.status_code == 200
-        (case,) = httpx.get(base + "/cases").json()
-        assert case["approval_id"] == approval_id and case["transaction_id"] == tiers["tier_1"]
+        (case,) = [c for c in httpx.get(base + "/cases", headers=reviewer).json() if c["approval_id"] == approval_id]
+        assert case["transaction_id"] == tiers["tier_1"] and case["approved_by"] == "rita.reviewer"
     finally:
         server.terminate()
         server.wait(timeout=10)

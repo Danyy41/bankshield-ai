@@ -146,6 +146,7 @@ class PendingApproval(BaseModel):
     proposed_input: dict[str, Any]
     rationale: str
     status: ApprovalStatus = ApprovalStatus.PENDING
+    requested_by: str | None = Field(default=None, description="Authenticated principal that triggered the proposal")
     created_at: datetime
     decided_at: datetime | None = None
     reviewer: str | None = None
@@ -160,6 +161,7 @@ class Case(BaseModel):
     summary: str
     cited_evidence: list[str]
     approval_id: str
+    approved_by: str | None = Field(default=None, description="Authenticated reviewer who approved it")
     created_at: datetime
 
 

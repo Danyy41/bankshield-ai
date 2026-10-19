@@ -24,6 +24,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# The suite provisions red-team accounts and files approvals: always run it
+# against a throwaway database, never a real one.
+import os  # noqa: E402
+import tempfile  # noqa: E402
+
+os.environ["BANKSHIELD_DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp(prefix='bankshield-redteam-')}/redteam.db"
+
 import yaml
 
 from bankshield import config

@@ -1,5 +1,9 @@
 """End-to-end tests for the Phase 4 FastAPI service layer, driven by
-AutoFakeLLMClient so no AWS credentials are required."""
+AutoFakeLLMClient so no AWS credentials are required.
+
+Requests authenticate as an analyst by default; approval decisions are made
+with a reviewer's token (the only role allowed to decide). Auth and RBAC
+behavior itself is covered in tests/test_auth.py."""
 
 from __future__ import annotations
 
@@ -11,13 +15,18 @@ from bankshield.investigation.llm_client import AutoFakeLLMClient
 
 
 @pytest.fixture(scope="module")
-def client():
+def client(auth_headers):
     from bankshield.api.app import app, get_llm_client
 
     app.dependency_overrides[get_llm_client] = lambda: AutoFakeLLMClient()
-    with TestClient(app) as c:
+    with TestClient(app, headers=auth_headers("analyst")) as c:
         yield c
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(scope="module")
+def reviewer(auth_headers):
+    return auth_headers("reviewer")
 
 
 @pytest.fixture(scope="module")
@@ -105,7 +114,7 @@ def test_policy_search(client):
     assert all(r["doc_id"].startswith("POL-") for r in results)
 
 
-def test_full_investigation_to_case_workflow(client, tier1_transaction_id):
+def test_full_investigation_to_case_workflow(client, reviewer, tier1_transaction_id):
     # 1. Run the investigation -- proposes a case, creates nothing yet.
     response = client.post("/investigations", json={"transaction_id": tier1_transaction_id})
     assert response.status_code == 200
@@ -132,10 +141,12 @@ def test_full_investigation_to_case_workflow(client, tier1_transaction_id):
     # 4. A human approves it.
     decision = client.post(
         f"/approvals/{approval_id}/decision",
-        json={"approved": True, "reviewer": "analyst_jane", "notes": "confirmed against evidence"},
+        json={"approved": True, "notes": "confirmed against evidence"},
+        headers=reviewer,
     )
     assert decision.status_code == 200
     assert decision.json()["status"] == "approved"
+    assert decision.json()["reviewer"] == "rita.reviewer"  # the authenticated reviewer
 
     # 5. Only now does the case exist.
     cases_after = client.get("/cases").json()
@@ -153,19 +164,19 @@ def test_get_investigation_404_before_any_run(client):
     assert response.status_code == 404
 
 
-def test_decide_unknown_approval_404(client):
-    response = client.post(
-        "/approvals/apr_does_not_exist/decision", json={"approved": True, "reviewer": "a"}
-    )
+def test_decide_unknown_approval_404(client, reviewer):
+    response = client.post("/approvals/apr_does_not_exist/decision", json={"approved": True}, headers=reviewer)
     assert response.status_code == 404
 
 
-def test_decide_same_approval_twice_409(client, tier1_transaction_id):
+def test_decide_same_approval_twice_409(client, auth_headers, tier1_transaction_id):
     txn_id = tier1_transaction_id
     response = client.post("/investigations", json={"transaction_id": txn_id})
     approval_id = response.json()["pending_approvals"][0]["approval_id"]
 
-    first = client.post(f"/approvals/{approval_id}/decision", json={"approved": True, "reviewer": "a"})
+    first = client.post(f"/approvals/{approval_id}/decision", json={"approved": True}, headers=auth_headers("reviewer"))
     assert first.status_code == 200
-    second = client.post(f"/approvals/{approval_id}/decision", json={"approved": False, "reviewer": "b"})
+    second = client.post(
+        f"/approvals/{approval_id}/decision", json={"approved": False}, headers=auth_headers("reviewer2")
+    )
     assert second.status_code == 409

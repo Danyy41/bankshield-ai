@@ -14,6 +14,12 @@ proposals land in the same in-memory `ApprovalStore` that
 reaches the investigation agent over HTTP with the A2A client, so the two
 agents could be split into separate services once the approval/case store
 is durable and shared.
+
+Calling either agent requires a bearer token (see the A2A middleware in
+api/app.py); the agent cards advertise that as an HTTP bearer security
+scheme. The triage agent calls the investigation agent with the *caller's*
+token, so proposals are attributed to whoever started the triage and the
+agent never acts with more authority than its caller.
 """
 
 from __future__ import annotations
@@ -36,6 +42,9 @@ from bankshield.investigation.schemas import InvestigationResult
 
 TRIAGE_PATH = "/a2a/triage"
 INVESTIGATOR_PATH = "/a2a/investigator"
+# JSON-RPC endpoints that require a bearer token (enforced by the API's A2A
+# middleware); the agent cards beside them stay public for discovery.
+A2A_RPC_PATHS = frozenset({TRIAGE_PATH, INVESTIGATOR_PATH})
 
 
 @dataclass

@@ -42,7 +42,7 @@ def sample_txn():
 
 
 def _gate_state():
-    return len(get_approval_store()._approvals), len(get_case_store().list_all())
+    return get_approval_store().count(), len(get_case_store().list_all())
 
 
 # --- discovery -----------------------------------------------------------
