@@ -14,6 +14,7 @@ from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
 
 from bankshield.investigation import data_access
+from bankshield.investigation.llm_client import LLMServiceError
 from bankshield.security.guardrails import sanitize_error_response
 from bankshield.security.validators import ToolInputValidationError
 
@@ -50,6 +51,11 @@ async def run_task(
         return
     except data_access.NotFoundError as exc:
         await updater.failed(reply(str(exc)))
+        return
+    except LLMServiceError as exc:
+        # Model backend down/throttled/misconfigured: the message is already
+        # caller-safe (no AWS error text).
+        await updater.failed(reply(f"Investigation not completed: {exc}"))
         return
     except Exception as exc:  # fail closed: log detail, return a generic message
         await updater.failed(reply(sanitize_error_response(exc)["detail"]))

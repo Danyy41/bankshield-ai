@@ -1,0 +1,31 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InvokeClaudeOpus55ViaUSInferenceProfile",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": "arn:aws:bedrock:us-east-1:ACCOUNT_ID:inference-profile/us.anthropic.claude-opus-5-5"
+    },
+    {
+      "Sid": "InvokeTheFoundationModelOnlyThroughThatProfile",
+      "Effect": "Allow",
+      "Action": "bedrock:InvokeModel",
+      "Resource": "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-5-5",
+      "Condition": {
+        "StringEquals": {
+          "bedrock:InferenceProfileArn": "arn:aws:bedrock:us-east-1:ACCOUNT_ID:inference-profile/us.anthropic.claude-opus-5-5"
+        }
+      }
+    },
+    {
+      "Sid": "OptionalFreePreflightChecks",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:GetInferenceProfile",
+        "bedrock:GetFoundationModelAvailability"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

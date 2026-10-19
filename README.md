@@ -191,6 +191,7 @@ bankshield-ai/
 │   │   ├── policy_corpus.py  # parses data/policy_docs/ into citable chunks
 │   │   ├── rag.py            # TF-IDF retrieval over the policy corpus
 │   │   ├── llm_client.py     # LLMClient interface: Bedrock + offline fake
+│   │   ├── bedrock_live.py   # free Bedrock preflight, redaction, live-run checks
 │   │   ├── tools.py          # controlled tool registry + dispatch
 │   │   ├── approvals.py      # human-approval gate for consequential actions
 │   │   ├── case_store.py     # cases (created only after approval)
@@ -602,16 +603,15 @@ environment variable, not a code change:
 | `BANKSHIELD_LLM_MODE` | Backend | Requires |
 |---|---|---|
 | `offline` (default) | `AutoFakeLLMClient` — deterministic, scripted | Nothing. Safe default for a public demo deployment. |
-| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API for `anthropic.claude-opus-5` (`config.BEDROCK_MODEL_ID_DEFAULT`, `config.BEDROCK_REGION_DEFAULT` — both overridable in `config.py`) | AWS credentials with `bedrock:InvokeModel` for that model in your account/region |
+| `bedrock` | `BedrockClaudeClient` — real Amazon Bedrock Converse API, Claude Opus 5.5 via the `us.anthropic.claude-opus-5-5` inference profile in `us-east-1` (override with `BANKSHIELD_BEDROCK_MODEL_ID` / `BANKSHIELD_BEDROCK_REGION` or `AWS_REGION`) | AWS credentials from the standard provider chain, Bedrock model access, and [`bedrock:InvokeModel`](deploy/iam/bedrock-invoke-policy.json) — see [Running against real Bedrock](#running-against-real-bedrock) |
 
 Leaving `BANKSHIELD_LLM_MODE` unset means the deployed API serves real
 requests end-to-end (transactions, risk scores, investigations, the
 approval workflow) with **zero configuration and no AWS dependency** —
-this is the intended default for a publicly reachable demo. Nothing in
-this repo has been run against a live Bedrock endpoint (no AWS credentials
-in this development environment), so treat `bedrock` mode's request/response
-handling as implemented-to-spec rather than field-tested — verify it in
-your own AWS account before relying on it.
+this is the intended default for a publicly reachable demo. `bedrock` mode
+is covered by stubbed-boto3 tests (`tests/test_bedrock_client.py`) but has
+**not yet been run against a live endpoint** — see the live-run status
+under [Running against real Bedrock](#running-against-real-bedrock).
 
 **Deployment commands:**
 
@@ -637,8 +637,84 @@ for the same offline/Bedrock choice:
 
 ```
 python scripts/13_evaluate_investigations.py           # offline (default)
-python scripts/13_evaluate_investigations.py --live    # real Bedrock
+python scripts/13_evaluate_investigations.py --live --confirm-billable   # real Bedrock (paid)
 ```
+
+### Running against real Bedrock
+
+The same `BedrockClaudeClient` and agent loop, pointed at Amazon Bedrock.
+Offline stays the default; nothing below runs unless you opt in.
+
+**Model.** Claude Opus 5.5 is served on Bedrock only through cross-region
+inference profiles — there is no in-region `anthropic.claude-opus-5-5:0`
+base-model ID to call directly. The default, `us.anthropic.claude-opus-5-5`,
+keeps traffic inside US regions (us-east-1 / us-east-2 / us-west-2), which
+fits a bank's data-residency stance better than `global.` (which may route
+anywhere, at ~10% lower cost). For other geographies set
+`BANKSHIELD_BEDROCK_MODEL_ID` to `eu.`, `jp.` or `au.anthropic.claude-opus-5-5`
+and a matching region.
+
+**Credentials.** Only boto3's standard provider chain: IAM Identity Center
+(`aws sso login --profile P` + `AWS_PROFILE=P`), an ECS task role or EC2
+instance profile, or environment keys for short-lived credentials. Nothing
+in the app accepts, stores or logs a key; Bedrock errors are logged by code
+only, since AWS error text can contain account IDs and ARNs.
+
+**Minimum IAM** — [`deploy/iam/bedrock-invoke-policy.json`](deploy/iam/bedrock-invoke-policy.json)
+(replace `ACCOUNT_ID`): `bedrock:InvokeModel` on the inference profile, plus
+on the `anthropic.claude-opus-5-5` foundation model *only when reached
+through that profile* (`bedrock:InferenceProfileArn` condition). The
+Converse API is authorized by `bedrock:InvokeModel`; no streaming, no
+`bedrock:*`. The last statement (`GetInferenceProfile`,
+`GetFoundationModelAvailability`) is optional and only used by the free
+preflight. Model access must also be enabled for the account (Bedrock
+console → Model catalog; Anthropic models need the one-time use-case form).
+
+**Failure handling.** botocore connect/read timeouts (10 s / 120 s per
+turn), adaptive retries (4 attempts total) for throttling, then every
+failure becomes an `LLMServiceError` with a caller-safe message and a
+category. The investigation fails closed: nothing is saved, the API returns
+`503` + `Retry-After` (throttled, timed out, unavailable) or `502`
+(access denied, model not found, request rejected), and A2A tasks end
+`failed`. A case the agent proposed before the failure stays a *pending*
+approval — still only a reviewer can turn it into a case — and its id is
+returned with the error. Tools run only on a `tool_use` stop; a guardrail
+intervention, content filter or malformed tool call ends the run and is
+flagged in the narrative. Opus 5.5's signed reasoning blocks are passed
+back verbatim between tool turns, and no sampling parameters or forced
+`tool_choice` are sent (Opus 5.5 rejects both).
+
+**1. Free preflight** (STS + Bedrock control plane, no inference):
+
+```
+AWS_PROFILE=your-profile python scripts/bedrock_preflight.py
+# [ OK ] credentials valid (account ****1234, assumed-role)
+# [ OK ] inference profile us.anthropic.claude-opus-5-5 is ACTIVE in us-east-1 (...)
+# [ OK ] model access to anthropic.claude-opus-5-5 is enabled
+```
+
+It prints exactly what is missing (credentials, region, profile, model
+access) and exits non-zero until everything is in place.
+
+**2. One live investigation (billable, ~$0.10–0.40, at most ~$2):**
+
+```
+AWS_PROFILE=your-profile python scripts/run_live_bedrock_investigation.py --confirm-billable
+```
+
+It runs a Tier 1 alert through the unchanged agent loop on an in-memory
+database, then checks: a real model answered, the tools ran without
+errors, every citation resolves to a passage the agent retrieved, and any
+proposed case is still only pending (no case exists). A separate reviewer
+then approves it, showing the case appears only after that decision. Only
+if every check passes does it save a sanitized copy (ARNs, account IDs,
+access keys and request/approval IDs redacted) to
+`docs/examples/live_bedrock_investigation.{md,json}`.
+
+**Live-run status: pending.** No live investigation has been recorded yet:
+the development environment for this repo has no valid AWS credentials,
+and no example output is fabricated. The example above will appear here
+once the script has been run in an AWS account with access.
 
 ### Evaluation
 
@@ -713,7 +789,7 @@ that attacks it. Phase 1–4 logic is untouched except for three small,
 targeted fixes the red-teaming itself surfaced (below) — the human-approval
 gate, tool allowlist, and offline architecture are exactly as before.
 
-### Attack categories (24 cases, `security/redteam_cases.yaml`)
+### Attack categories (30 cases, `security/redteam_cases.yaml`)
 
 1. **Prompt injection** — narrative claims of already-completed actions,
    instruction-shaped API field values, injected enum values.
@@ -789,7 +865,7 @@ model's judgment — still holds.
 
 ### Results
 
-**24/24 synthetic attacks blocked (100%)** on the run backing
+**30/30 synthetic attacks blocked (100%)** on the run backing
 [`reports/phase5_redteam_report.md`](reports/phase5_redteam_report.md) —
 run it yourself with `python scripts/run_redteam.py`. One real gap was
 found and fixed during this phase (the citation-retrieval-scoping issue
@@ -800,12 +876,12 @@ Phase 1–4 structure without modification.
 python scripts/run_redteam.py
 # [PASS] PI-01    prompt_injection
 # ...
-# 24/24 attacks blocked (100%)
+# 30/30 attacks blocked (100%)
 # Saved report to reports/phase5_redteam_report.md
 ```
 
 Security regression tests (`tests/test_security_redteam.py`,
-`tests/test_security_validators_guardrails.py`) run the same 24 cases plus
+`tests/test_security_validators_guardrails.py`) run the same 30 cases plus
 direct unit tests of `validators.py`/`guardrails.py` as part of the normal
 test suite, so a future change that reopens one of these gaps fails CI, not
 just the standalone script.
@@ -852,8 +928,9 @@ The [`Dockerfile`](Dockerfile) packages the Phase 4 API
   and scored.
 - **Offline by default.** `BANKSHIELD_LLM_MODE=offline` (the scripted
   `AutoFakeLLMClient`) — no AWS credentials needed. Set
-  `-e BANKSHIELD_LLM_MODE=bedrock` plus AWS credentials to use the real
-  model.
+  `-e BANKSHIELD_LLM_MODE=bedrock` plus credentials from the standard chain
+  (on ECS, a task role — never keys baked into the image) to use the real
+  model; see [Running against real Bedrock](#running-against-real-bedrock).
 - **Hardened.** Python 3.11 slim base pinned by digest, non-root user
   (uid 10001), no build tools in the runtime image, and it runs under a
   read-only root filesystem with all capabilities dropped. A `HEALTHCHECK`

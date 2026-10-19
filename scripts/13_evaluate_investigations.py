@@ -7,10 +7,11 @@ success rate, latency, and estimated cost.
 
 Runs offline by default (AutoFakeLLMClient, no AWS credentials needed) so
 this is reproducible in CI. Pass --live to evaluate the real Bedrock/Claude
-backend instead (requires AWS credentials with bedrock:InvokeModel).
+backend instead (requires AWS credentials with bedrock:InvokeModel; billable,
+so it also requires --confirm-billable -- 3 tiers x N investigations).
 
 Usage:
-    python scripts/13_evaluate_investigations.py [--live] [--n-per-tier N]
+    python scripts/13_evaluate_investigations.py [--live --confirm-billable] [--n-per-tier N]
 """
 
 import argparse
@@ -37,8 +38,11 @@ from bankshield.reproducibility import with_environment
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", help="Use the real Bedrock/Claude backend")
+    parser.add_argument("--confirm-billable", action="store_true", help="Acknowledge --live makes paid Bedrock calls")
     parser.add_argument("--n-per-tier", type=int, default=4)
     args = parser.parse_args()
+    if args.live and not args.confirm_billable:
+        parser.error("--live makes billable Amazon Bedrock calls; add --confirm-billable to proceed")
 
     config.METRICS_DIR.mkdir(parents=True, exist_ok=True)
 
