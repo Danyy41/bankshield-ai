@@ -871,6 +871,105 @@ The image holds synthetic data only. CORS is open (`*`) and there is no
 authentication layer yet (see Roadmap), so don't expose it publicly as-is
 with real data.
 
+## MCP server
+
+[`src/bankshield/mcp_server.py`](src/bankshield/mcp_server.py) exposes the
+investigation agent's **read-only** tools over the
+[Model Context Protocol](https://modelcontextprotocol.io), so any MCP client
+(Claude Code, Claude Desktop, MCP Inspector, your own agent) can query
+BankShield's data, model, and policy corpus. It is built on the official MCP
+Python SDK (`mcp`, low-level `Server`) and reuses the existing tool layer
+rather than re-declaring it:
+
+| Tool | What it returns |
+|---|---|
+| `get_transaction` | Raw facts for one transaction (amount, merchant, country, device, IP, timing, amount vs. customer average) |
+| `get_risk_score` | Model risk score (0–1), risk tier, and top signed feature attributions |
+| `get_auth_history` | A customer's recent logins/sessions, newest first (`limit` 1–200) |
+| `get_graph_neighbors` | Customers linked via shared device/IP/beneficiary, with prior-fraud flags |
+| `search_policy` | Citable policy passages (`DOC-ID §section`) for a query (`top_k` 1–20) |
+
+- **Same validation as the agent.** Each call goes through
+  `tools.execute_tool`, so the Phase 5 validators
+  (`security/validators.py`) enforce the schema server-side: unknown
+  fields, wrong types, oversized strings, and out-of-range limits are
+  rejected. Discovery advertises those same strict schemas
+  (`additionalProperties: false`, length/range bounds), and every tool is
+  annotated `readOnlyHint: true`. Unexpected errors are sanitized by
+  `guardrails.sanitize_error_response` — internals are logged to stderr,
+  never returned.
+- **No case creation over MCP — by design.** `create_case` is not exposed,
+  and neither is any approval decision. Approvals and cases live in the
+  HTTP API process's memory, so a proposal filed by a separate MCP process
+  could never reach a human reviewer; and deciding an approval is the
+  human half of the POL-CASE-004 §3 gate, which an (often AI) MCP caller
+  must not hold. Exposure is an explicit allowlist checked at import
+  against `tools.CONSEQUENTIAL_TOOLS`; a call to any other tool name is
+  refused before it reaches the dispatcher. Case proposals stay on the
+  API's `POST /investigations` → `POST /approvals/{id}/decision` path.
+
+### Launch and connect
+
+The server speaks MCP over **stdio**, launched by the client. It needs the
+generated data and model (`python scripts/run_all.py`) and loads them at
+startup — if they're missing it exits with a clear error on stderr.
+
+```
+# Claude Code
+claude mcp add bankshield -- /abs/path/to/.venv/bin/python /abs/path/to/bankshield-ai/scripts/run_mcp_server.py
+
+# MCP Inspector (interactive UI, or --cli for scripted calls)
+npx @modelcontextprotocol/inspector@2.9.0 python scripts/run_mcp_server.py
+npx @modelcontextprotocol/inspector@2.9.0 --cli python scripts/run_mcp_server.py --method tools/list
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "bankshield": {
+      "command": "/abs/path/to/.venv/bin/python",
+      "args": ["/abs/path/to/bankshield-ai/scripts/run_mcp_server.py"]
+    }
+  }
+}
+```
+
+Or run it from the Docker image, which already contains the data and model
+(`-i` keeps stdin open for the protocol):
+
+```
+docker run -i --rm --read-only --tmpfs /tmp --cap-drop ALL bankshield-ai python -m bankshield.mcp_server
+```
+
+### Tests
+
+`tests/test_mcp_server.py` drives the server through the official MCP SDK
+client — in-process, and end to end over a real stdio subprocess — covering
+discovery (exactly the five tools, read-only annotations, strict schemas),
+a valid call to every tool, invalid inputs (missing/wrong-type/oversized/
+extra fields, out-of-range limits), and security boundaries (`create_case`
+and look-alike names refused with no approval filed and no case created;
+no exposed tool touches the approval gate; internal errors sanitized). CI
+also runs [`scripts/check_mcp_inspector.sh`](scripts/check_mcp_inspector.sh),
+which exercises the server with an independent client — the MCP Inspector
+CLI (TypeScript SDK).
+
+### Limitations
+
+- **No authentication.** stdio means the server runs with the privileges
+  of whoever launches it, and anyone who can launch it can read all of the
+  (synthetic) data the tools expose. No network transport is provided on
+  purpose: one would need authentication and authorization first.
+- **No per-caller scoping or rate limiting.** Any connected client can
+  query any transaction or customer. Fine for synthetic data; real data
+  would need entitlement checks and audit logging per caller.
+- **Tool output is untrusted text for the client.** `search_policy`
+  returns policy text verbatim; the corpus is fixed and the malicious
+  fixtures live outside it (Phase 5), but an MCP client's model should
+  still treat tool results as data, not instructions.
+
 ## Continuous integration
 
 [`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs on every
@@ -880,6 +979,8 @@ the tests depend on, then the full `pytest` suite, then
 `python scripts/run_redteam.py`, which exits non-zero if any red-team
 attack is not blocked, then `python scripts/check_reproducibility.py`
 (see below). Dependencies are installed from `requirements-lock.txt`.
+The MCP server is checked by its pytest suite and by
+`scripts/check_mcp_inspector.sh` (MCP Inspector CLI over stdio).
 A parallel `docker` job builds the image, starts it with a read-only root
 filesystem and no capabilities, waits for its health check, and runs
 `scripts/smoke_test_api.py` against it.
