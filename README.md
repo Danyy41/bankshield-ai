@@ -3,10 +3,142 @@
 [![Tests](https://github.com/Danyy41/bankshield-ai/actions/workflows/tests.yml/badge.svg)](https://github.com/Danyy41/bankshield-ai/actions/workflows/tests.yml)
 
 BankShield AI is a portfolio project demonstrating production-style AI engineering
-across financial crime detection, cybersecurity, and applied ML. It is being built
-in phases, each one a complete, working slice rather than a stub.
+across financial crime detection, cybersecurity, and applied ML: an
+**offline-capable AI fraud-investigation system** in which ML models score
+transactions, an agent investigates alerts with controlled tools and cited
+policy, and every consequential action waits for a human reviewer.
 
-**This repository implements Phases 1–5, plus CI, reproducible builds, Docker, an MCP server, A2A agents, and authentication with durable state.**
+**Status: complete.** It was built in phases, each a working slice rather
+than a stub: the ML pipeline, the agentic investigation workflow, a red-team
+suite, CI, reproducible builds, Docker, an MCP server, A2A agents, and
+authentication with durable state. Everything runs offline by default.
+Amazon Bedrock is an optional integration that is disabled by default. **Live
+Bedrock inference has not succeeded for this project**; see
+[Amazon Bedrock status](#amazon-bedrock-status).
+
+## Contents
+
+- [At a glance](#at-a-glance): architecture, quick start, verification results, limitations
+- [Phase 1: fraud-detection ML baseline](#phase-1-fraud-detection-ml-baseline) ·
+  [Phase 2: cyber telemetry](#phase-2-cyber-authentication-telemetry) ·
+  [Phase 3: graph intelligence](#phase-3-graph-based-financial-crime-intelligence)
+- [Phase 4: AI-assisted investigation](#phase-4-ai-assisted-financial-crime-investigation)
+  (incl. [optional Bedrock integration](#running-against-real-bedrock))
+- [Phase 5: AI security red team](#phase-5--ai-security-red-team)
+- [Docker](#docker) · [MCP server](#mcp-server) · [A2A agents](#a2a-multi-agent-architecture) ·
+  [Security](#security-authentication-authorization-and-durable-state) ·
+  [CI](#continuous-integration) · [Reproducibility](#reproducibility)
+
+## At a glance
+
+### Architecture
+
+```mermaid
+flowchart LR
+    subgraph ML["ML pipeline (Phases 1-3, offline, seeded)"]
+        D[Synthetic transactions,<br/>logins, graph entities] --> F[Features: transaction +<br/>cyber + graph]
+        F --> M[XGBoost risk model]
+    end
+    subgraph API["FastAPI service (auth + RBAC)"]
+        R[Risk scoring] --> AG[Investigation agent<br/>tool-use loop]
+        AG -->|read-only tools| T[get_risk_score · get_auth_history<br/>get_graph_neighbors · search_policy]
+        AG -->|create_case| P[(Pending approval)]
+        P -->|reviewer decides,<br/>four-eyes rule| C[(Case)]
+        G[Guardrails: input validation,<br/>tool allowlist, citation filter] -.-> AG
+    end
+    M --> R
+    LLM{{LLM client<br/>offline scripted - default<br/>Bedrock Converse - optional}} --> AG
+    UI[Static frontend] --> API
+    MCP[MCP server<br/>read-only tools] --> T
+    A2A[A2A agents<br/>triage to investigator] --> AG
+    DB[(SQLite: users, approvals,<br/>cases, audit log)] --- API
+```
+
+The agent can read data and *propose* a case, but only an authenticated
+reviewer who isn't the requester can approve one. This is enforced in code
+and the database, not just in the prompt.
+
+### Quick start (local, offline)
+
+Requires Python 3.11.
+
+```
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt -c requirements-lock.txt
+python scripts/run_all.py                                  # data, models, reports (deterministic)
+
+export PYTHONPATH=src BANKSHIELD_JWT_SECRET="$(openssl rand -base64 48)"
+python -m bankshield.auth.cli create-user alice.analyst --role analyst    # prompts for a password
+python -m bankshield.auth.cli create-user rita.reviewer --role reviewer
+uvicorn bankshield.api.app:app --port 8000                 # offline LLM mode by default
+
+python -m http.server 8080 --directory frontend            # UI at http://localhost:8080
+```
+
+Or with Docker (hardened, state on a volume): see [Docker](#docker).
+
+### Verification results
+
+All checks run offline, with no AWS credentials, on every push
+([CI workflow](.github/workflows/tests.yml)):
+
+| Check | Result |
+|---|---|
+| `pytest` (unit, API, auth/RBAC, persistence, MCP, A2A, Bedrock client with stubbed AWS) | **315 passed** |
+| Red-team suite (`scripts/run_redteam.py`, 30 synthetic attacks, 8 categories) | **30/30 blocked** |
+| Reproducibility (`scripts/check_reproducibility.py`) | **7/7 metrics files match** the committed ones |
+| Docker smoke test (`scripts/docker_smoke.sh`: hardened container, auth, RBAC, approval gate, A2A, restart persistence) | **passed** |
+| MCP Inspector CLI against the MCP server | **passed** (CI) |
+
+The final model (transaction + cyber + graph features) reaches **ROC-AUC 0.937 /
+PR-AUC 0.572** on a 10,000-transaction test set with 1.38% fraud
+([Phase 3](#results-does-graph-intelligence-help-further)).
+
+### Amazon Bedrock status
+
+`BANKSHIELD_LLM_MODE=offline` is the default, and every result in this
+repository comes from the deterministic offline client. Bedrock
+(`BANKSHIELD_LLM_MODE=bedrock`, Converse API, model set by
+`BANKSHIELD_BEDROCK_MODEL_ID`) is an optional integration. Its client,
+error handling and diagnostics are covered by tests that stub AWS.
+
+What was verified against a real AWS account, using free and read-only
+calls only:
+- **Claude Opus 5.5** (`us.anthropic.claude-opus-5-5`): the inference profile
+  was found, model availability reported authorized, entitled and agreement
+  `AVAILABLE`, and the IAM simulation for the restricted app identity
+  returned `allowed` for the profile and all three regional models.
+- **Claude Sonnet 5.5** (`us.anthropic.claude-sonnet-5-5`, the configured
+  default): the inference profile is `ACTIVE`, routing to us-east-1,
+  us-east-2 and us-west-2. A least-privilege policy was applied, and the IAM
+  simulation returned `allowed` through the profile and `implicitDeny` for
+  direct calls, which shows the profile condition is enforced. The model
+  agreement was still `NOT_AVAILABLE`.
+
+**What did not succeed:** the live Converse call to Opus 5.5 was denied with
+`AccessDeniedException (HTTP 403): anthropic.claude-opus-5-5 is not
+available for this account`. That is an account-level model restriction,
+not an IAM or code issue. No live request was made to Sonnet 5.5, and the
+Bedrock experiments then ended. **No live Bedrock inference has succeeded,
+and no live investigation output is included or claimed.**
+
+### Limitations
+
+- **Synthetic data only.** All transactions, logins and graph entities are
+  generated. The models' metrics describe this simulation, not real-world
+  fraud.
+- **The offline LLM is scripted.** The offline client follows a
+  deterministic investigation script, so the Phase 4 evaluation and the
+  red-team suite measure the system's controls (tool gating, citation
+  filtering, approval enforcement), not a real model's reasoning. A
+  live-model evaluation and red-team run remain to be done.
+- **Security scope.** There's a local identity store with HS256 JWTs (no
+  IdP or MFA) and no single-token revocation. CORS is open and TLS must be
+  terminated in front of the app. SQLite allows a single writer, and A2A
+  task state is per-process, so production use would need PostgreSQL and
+  an IdP. See the per-section *Limitations* below.
+- **Not a production system.** It's a portfolio demonstration. It hasn't
+  been penetration-tested and isn't fit for real customer data as-is.
 
 ## Phase 1: fraud-detection ML baseline
 
@@ -662,16 +794,12 @@ Not every account can invoke every model. Bedrock can answer
 `AccessDeniedException: <model> is not available for this account` even when
 IAM allows the call and the model agreement shows `AVAILABLE`. That is an
 account-level restriction, not a permissions problem, so changing IAM doesn't
-fix it. To find a model your account can use:
-
-```
-python scripts/bedrock_model_access_test.py                    # free: profile + availability per candidate
-python scripts/bedrock_model_access_test.py --confirm-billable # one maxTokens=1 request per candidate
-```
-
-The second command stops at the first model that answers. Denied requests
-aren't billed, so at most one tiny request is (well under $0.001). For other
-geographies use the `eu.`, `jp.` or `au.` profile and a matching region.
+fix it. To check whether the account can invoke a given model, set
+`BANKSHIELD_BEDROCK_MODEL_ID` to it and run
+`python scripts/bedrock_access_diagnose.py --reproduce-only --confirm-billable`
+(below). It sends one `maxTokens=1` request, which isn't billed if denied.
+For other geographies use the `eu.`, `jp.` or `au.` profile and a matching
+region.
 
 **Credentials.** Only boto3's standard provider chain: IAM Identity Center
 (`aws sso login --profile P` + `AWS_PROFILE=P`), an ECS task role or EC2
@@ -770,10 +898,12 @@ still only get the generic message.
 There is no separate IAM action for Converse: it is authorized as
 `bedrock:InvokeModel`.
 
-**Live-run status: pending.** No live investigation has been recorded yet:
-the development environment for this repo has no valid AWS credentials,
-and no example output is fabricated. The example above will appear here
-once the script has been run in an AWS account with access.
+**Live-run status: not achieved.** The live call was denied by an
+account-level model restriction (`<model> is not available for this account`)
+after IAM and model availability had been verified. No live investigation
+has been recorded and none is claimed; see
+[Amazon Bedrock status](#amazon-bedrock-status). The scripts above remain for
+anyone running BankShield in an account with model access.
 
 ### Evaluation
 
@@ -1443,14 +1573,15 @@ and across processes (only Phase 4 wall-clock latency varies).
 
 ## Roadmap
 
-Phases 1 through 5 (this repo) are the classical ML + cyber-telemetry +
-graph-intelligence foundation, the AI-assisted investigation layer on top
-of it, and a defensive red-team evaluation of that layer. Possible next
-steps: a live-model (Bedrock) red-team run to complement the offline suite
-above. The durable approval/case store and the authentication layer are
-now in place (see Security); next would be a managed identity provider
-(Cognito/OIDC), PostgreSQL with Alembic migrations, and a shared A2A task
-store so the agents can run as separate services.
+The project is complete as an offline system. Natural next steps:
+
+- **Live-model evaluation:** run the Phase 4 evaluation and the red-team
+  suite against a real model in an AWS account where the model is
+  available (the Bedrock integration and its diagnostics are ready).
+- **Production hardening:** a managed identity provider with MFA
+  (Cognito/OIDC), PostgreSQL with Alembic migrations, a shared A2A task
+  store so the agents can run as separate services, restricted CORS, and
+  token revocation.
 
 ## License
 

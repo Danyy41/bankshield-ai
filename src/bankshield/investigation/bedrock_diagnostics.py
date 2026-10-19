@@ -110,9 +110,9 @@ _CAUSES: list[tuple[tuple[str, ...], Cause]] = [
         "model_not_offered",
         "Bedrock doesn't offer this model to this account (even if IAM allows it and the agreement shows "
         "AVAILABLE) -- an account-level availability restriction, not a permissions problem.",
-        "Use a model the account can invoke (set BANKSHIELD_BEDROCK_MODEL_ID; check with "
-        "scripts/bedrock_model_access_test.py), or ask AWS (account team / Support, citing the request "
-        "ID) to enable this model for the account. Changing IAM won't help.",
+        "Use a model the account can invoke (set BANKSHIELD_BEDROCK_MODEL_ID and check it with "
+        "scripts/bedrock_access_diagnose.py --reproduce-only), or ask AWS (account team / Support, "
+        "citing the request ID) to enable this model for the account. Changing IAM won't help.",
     )),
     (("don't have access to the model", "do not have access to the model", "not have access to the model"), Cause(
         "model_access", "Model access for this model isn't granted/accepted in this account and region.",

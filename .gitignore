@@ -34,3 +34,20 @@ var/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Secrets and local credentials -- never commit these
+.env
+.env.*
+*.pem
+*.key
+.aws/
+credentials
+*.db
+*.sqlite
+
+# Local tool caches and CI outputs
+.pytest_cache/
+.ruff_cache/
+pytest-results.xml
+pip-freeze.txt
+container.log
