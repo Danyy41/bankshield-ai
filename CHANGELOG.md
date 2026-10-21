@@ -6,6 +6,10 @@ All notable changes to BankShield AI. The format follows
 
 ## [Unreleased]
 
+### Added
+- Ruff lint step in CI (`ruff==0.16.10`, rules `F` and `E9`, configured in
+  `ruff.toml`); five unused imports removed (#30).
+
 ## [1.0.0] - 2026-10-21
 
 First tagged version of the offline-first portfolio project. Each entry links

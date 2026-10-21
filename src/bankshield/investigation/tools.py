@@ -20,7 +20,10 @@ from typing import Any
 from bankshield.auth.context import requesting_username
 from bankshield.investigation import data_access
 from bankshield.investigation.approvals import get_approval_store
-from bankshield.investigation.case_store import get_case_store
+# Not called here: re-exported as a module attribute so tests and the red-team
+# engine can swap the case store (`tools.get_case_store = ...`) and prove tool
+# calls never create cases.
+from bankshield.investigation.case_store import get_case_store  # noqa: F401
 from bankshield.investigation.rag import search_policy as _search_policy
 from bankshield.investigation.schemas import ToolCallRecord
 from bankshield.security.validators import ToolInputValidationError, validate_tool_input

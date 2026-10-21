@@ -147,7 +147,6 @@ def test_filter_citations_to_retrieved_keeps_real_and_retrieved_citation():
 
 def test_retrieved_chunk_ids_includes_payload_and_search_policy_calls():
     from bankshield.investigation.schemas import (
-        AuthEvent,
         CyberSignals,
         GraphSignals,
         InvestigationPayload,
