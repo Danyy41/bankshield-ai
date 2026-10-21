@@ -1,0 +1,33 @@
+name: Feature or improvement
+description: Propose new functionality or an improvement, with measurable acceptance criteria.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is missing or limited today, and why it matters. Link evidence (code, reports, issues).
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Proposed change
+      description: What will change. Note anything explicitly out of scope.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkable, measurable conditions for "done" (tests, metrics, CI steps).
+      value: |
+        - [ ]
+        - [ ] Tests added or updated; CI green
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and constraints
+      description: Security, cost, data or compatibility concerns.
