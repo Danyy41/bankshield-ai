@@ -38,7 +38,6 @@ durable (persistence/).
 from __future__ import annotations
 
 import os
-import uuid
 from functools import lru_cache
 from typing import Any
 

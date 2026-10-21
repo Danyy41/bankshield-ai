@@ -1,0 +1,14 @@
+# Lint only -- `ruff format` is not used, so existing code style is untouched.
+# The rule set catches real defects (undefined names, unused imports and
+# variables, syntax errors), not style.
+target-version = "py311"
+
+[lint]
+select = ["F", "E9"]
+
+[lint.per-file-ignores]
+# Dead assignments in the seeded ML pipeline. Kept as-is: these modules
+# produce the committed model results, which this lint change must not touch.
+"src/bankshield/cyber_features.py" = ["F841"]
+"src/bankshield/data_generation.py" = ["F841"]
+"src/bankshield/evaluation.py" = ["F841"]

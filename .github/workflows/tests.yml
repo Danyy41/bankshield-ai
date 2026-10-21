@@ -57,6 +57,9 @@ jobs:
           pip install -r requirements-dev.txt -c requirements-lock.txt
           pip freeze > pip-freeze.txt
 
+      - name: Lint (ruff)
+        run: ruff check --output-format=github .
+
       - name: Generate data, train models, run Phase 4 eval (run_all.py)
         run: python scripts/run_all.py
 
