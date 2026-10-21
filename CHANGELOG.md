@@ -6,15 +6,11 @@ All notable changes to BankShield AI. The format follows
 
 ## [Unreleased]
 
-### Added
-- Development-process documentation, issue and PR templates, and this
-  changelog (#28).
+## [1.0.0] - 2026-10-21
 
-## [1.0.0] - not yet released (awaiting owner approval)
-
-First tagged version. It covers all work merged to `main` up to commit
-`435e0f5` (2026-10-19). Each entry links the PR or commits that delivered it,
-and the retrospective issue that documents it.
+First tagged version of the offline-first portfolio project. Each entry links
+the PR or commits that delivered it, and the retrospective issue that
+documents it.
 
 ### Added
 - **ML fraud detection:** synthetic seeded data, a chronological split, a
@@ -41,11 +37,14 @@ and the retrospective issue that documents it.
 - **Security and durable state:** JWT authentication, role-based access,
   four-eyes approval, transactional decisions, an append-only audit log, and
   state that survives restarts (#9, #25).
-- **Optional Amazon Bedrock client:** off by default and unverified, with
-  least-privilege IAM, fail-closed error handling and diagnostics. No live
-  inference is claimed (#10, #11, #26).
+- **Optional Amazon Bedrock client:** off by default, with least-privilege
+  IAM, fail-closed error handling and diagnostics (#10, #11, #26). Live
+  inference was attempted but didn't succeed, so the integration is
+  unverified and no live results are included.
 - **Documentation:** a concise README, `docs/design.md` and
   `docs/bedrock.md` (#13, #27).
+- **Development process:** `docs/development-process.md`, issue and PR
+  templates, milestones, a project board, and this changelog (#37, #28).
 
 ### Verification at this version
 - `pytest`: 315 passed
@@ -59,4 +58,5 @@ agent, so evaluation results measure the controls rather than a live model.
 Authentication uses a local identity store (no IdP or MFA). CORS is open.
 SQLite allows a single writer. See the [Backlog](https://github.com/Danyy41/bankshield-ai/milestone/9).
 
-[Unreleased]: https://github.com/Danyy41/bankshield-ai/compare/435e0f5...HEAD
+[Unreleased]: https://github.com/Danyy41/bankshield-ai/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/Danyy41/bankshield-ai/releases/tag/v1.0.0
