@@ -175,6 +175,16 @@ every dataset and metric is byte-identical across runs on the pinned stack
 (Python 3.11, `requirements-lock.txt`). Each metrics file records the
 library versions that produced it.
 
+## Development process
+
+Work moves from a GitHub issue with acceptance criteria through a branch and
+pull request, CI (tests, red team, reproducibility, Docker smoke test), owner
+review, and merge. It's tracked on the
+[project board](https://github.com/users/Danyy41/projects/1) under
+[milestones](https://github.com/Danyy41/bankshield-ai/milestones). Development
+is AI-assisted; [docs/development-process.md](docs/development-process.md)
+describes the lifecycle and the project's actual history.
+
 ## Tech stack
 
 Python 3.11 · pandas · scikit-learn · XGBoost · FastAPI · Pydantic ·
@@ -227,6 +237,7 @@ Bedrock inference is claimed. See [docs/bedrock.md](docs/bedrock.md).
 
 - [docs/design.md](docs/design.md): detailed design notes for every phase and component
 - [reports/](reports/): model comparisons, the investigation evaluation, and the red-team report
+- [CHANGELOG.md](CHANGELOG.md): version history
 
 ## License
 

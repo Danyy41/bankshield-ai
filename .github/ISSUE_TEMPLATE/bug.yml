@@ -1,0 +1,42 @@
+name: Bug report
+description: Something behaves differently from what is documented or tested.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Observed behavior, including the error output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Commands, inputs and environment (Python version, OS, Docker or local).
+      value: |
+        1.
+        2.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How we'll know it's fixed, ideally a regression test.
+      value: |
+        - [ ] Regression test reproduces the bug and passes after the fix
+        - [ ] CI green
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security impact
+      description: Does this affect authentication, the approval gate, guardrails or data exposure? Do not paste secrets or credentials.
